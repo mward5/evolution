@@ -1315,6 +1315,56 @@ composer_build_message_smime (AsyncContext *context,
 				context->recipients->len - 1);
 	}
 
+	/* Triple-wrap (RFC 2634): when both sign and encrypt, add outer signature
+	 * over the encrypted body so Gmail/Broadcom can verify before decrypting. */
+	if (context->smime_sign && context->smime_encrypt) {
+		CamelCipherContext *cipher_outer;
+		CamelMimePart *outer_part;
+		CamelDataWrapper *outer_content;
+		gboolean success;
+
+		cipher_outer = camel_smime_context_new (context->session);
+		camel_smime_context_set_sign_mode (
+			(CamelSMIMEContext *) cipher_outer,
+			CAMEL_SMIME_SIGN_CLEARSIGN);
+
+		outer_part = camel_mime_part_new ();
+		success = camel_cipher_context_sign_sync (
+			cipher_outer, signing_certificate,
+			CAMEL_CIPHER_HASH_SHA256,
+			CAMEL_MIME_PART (context->message),
+			outer_part, cancellable, error);
+
+		g_object_unref (cipher_outer);
+
+		if (!success) {
+			g_object_unref (outer_part);
+			return FALSE;
+		}
+
+		outer_content = camel_medium_get_content (CAMEL_MEDIUM (outer_part));
+		camel_medium_set_content (
+			CAMEL_MEDIUM (context->message),
+			g_object_ref (outer_content));
+		g_object_unref (outer_part);
+
+		/* Gmail compatibility: send multipart/signed body as 7bit (no base64).
+		 * Gmail and other clients expect boundaries in plain text. */
+		camel_mime_part_set_encoding (
+			CAMEL_MIME_PART (context->message),
+			CAMEL_TRANSFER_ENCODING_7BIT);
+		camel_data_wrapper_set_encoding (outer_content,
+			CAMEL_TRANSFER_ENCODING_7BIT);
+
+		/* Root must not be shown as attachment; clear encrypt-step headers. */
+		camel_mime_part_set_disposition (
+			CAMEL_MIME_PART (context->message), "inline");
+		camel_mime_part_set_filename (
+			CAMEL_MIME_PART (context->message), NULL);
+		camel_mime_part_set_description (
+			CAMEL_MIME_PART (context->message), NULL);
+	}
+
 	/* we replaced the message directly, we don't want to do reparenting foo */
 	if (context->smime_encrypt) {
 		context->skip_content = TRUE;
