@@ -1362,7 +1362,7 @@ composer_build_message_smime (AsyncContext *context,
 		camel_mime_part_set_filename (
 			CAMEL_MIME_PART (context->message), NULL);
 		camel_mime_part_set_description (
-			CAMEL_MIME_PART (context->message), NULL);
+			CAMEL_MIME_PART (context->message), "");
 	}
 
 	/* we replaced the message directly, we don't want to do reparenting foo */
