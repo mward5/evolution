@@ -113,7 +113,13 @@ jobs:
           cp -v eds-src/*.patch "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
           cp -v eds-src/evolution-data-server.spec "$HOME/rpmbuild/SPECS/"
           rpmbuild --define "_topdir $HOME/rpmbuild" -bb "$HOME/rpmbuild/SPECS/evolution-data-server.spec"
-          dnf install -y "$HOME"/rpmbuild/RPMS/*/*.rpm
+          # Only the main and -devel packages are needed to satisfy evolution's
+          # BuildRequires. The other subpackages (perl, tests, doc, langpacks,
+          # debuginfo) pull in extra runtime requirements (e.g. /usr/sbin/perl)
+          # that this minimal build container doesn't have and doesn't need.
+          dnf install -y \
+            "$HOME/rpmbuild/RPMS"/*/"${NAME}-${VERSION}"-*.rpm \
+            "$HOME/rpmbuild/RPMS"/*/"${NAME}-devel-${VERSION}"-*.rpm
           rm -f "$HOME"/rpmbuild/RPMS/*/*.rpm
 
       - name: Fetch upstream source tarball for evolution
