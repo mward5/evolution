@@ -21,25 +21,49 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # evolution's Build-Depends pins evolution-data-server-dev (>= 3.60.2) and
+      # friends. Ubuntu's actual archive doesn't have that version yet (still on
+      # 3.56.2 as of this writing), so we can't rely on apt to satisfy it. Build
+      # and install our own evolution-data-server first, same as anyone who
+      # actually wants to use this fork would have to.
+      - uses: actions/checkout@v4
+        with:
+          repository: mward5/evolution-data-server
+          ref: debian-packaging
+          path: eds-src
+
       - uses: actions/checkout@v4
         with:
           ref: debian-packaging
+          path: evolution-src
 
-      - name: Install build tooling and Build-Depends
+      - name: Install build tooling
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
           apt-get install -y --no-install-recommends dpkg-dev build-essential fakeroot equivs devscripts
-          apt-get build-dep -y .
+
+      - name: Build and install evolution-data-server (build dependency)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get build-dep -y ./eds-src
+          (cd eds-src && dpkg-buildpackage -us -uc -b)
+          apt-get install -y ./*.deb
+          rm -f ./*.deb ./*.changes ./*.buildinfo ./*.dsc ./*.tar.*
 
       - name: Build .deb
-        run: dpkg-buildpackage -us -uc -b
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get build-dep -y ./evolution-src
+          (cd evolution-src && dpkg-buildpackage -us -uc -b)
 
       - name: Collect artifacts
         run: |
           mkdir -p dist
-          mv ../*.deb dist/
+          mv ./*.deb dist/
           ls -l dist
 
       - uses: actions/attest-build-provenance@v2
@@ -59,30 +83,54 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # Same reasoning as build-deb: don't assume the target distro's repos
+      # already carry our exact evolution-data-server version. Build and
+      # install it ourselves first, from the same fork.
+      - uses: actions/checkout@v4
+        with:
+          repository: mward5/evolution-data-server
+          ref: fedora-packaging
+          path: eds-src
+
       - uses: actions/checkout@v4
         with:
           ref: fedora-packaging
+          path: evolution-src
 
-      - name: Install build tooling and BuildRequires
+      - name: Install build tooling
         run: |
           dnf install -y rpm-build rpmdevtools 'dnf-command(builddep)' curl
           rpmdev-setuptree
-          dnf builddep -y ./evolution.spec
 
-      - name: Fetch upstream source tarball
+      - name: Build and install evolution-data-server (build dependency)
         run: |
-          NAME=$(awk -F': *' '/^Name:/{print $2; exit}' evolution.spec)
-          VERSION=$(awk -F': *' '/^Version:/{print $2; exit}' evolution.spec)
+          dnf builddep -y ./eds-src/evolution-data-server.spec
+          NAME=$(awk -F': *' '/^Name:/{print $2; exit}' eds-src/evolution-data-server.spec)
+          VERSION=$(awk -F': *' '/^Version:/{print $2; exit}' eds-src/evolution-data-server.spec)
           MAJMIN=$(echo "$VERSION" | cut -d. -f1,2)
           curl -fL -o "$HOME/rpmbuild/SOURCES/${NAME}-${VERSION}.tar.xz" \
             "https://download.gnome.org/sources/${NAME}/${MAJMIN}/${NAME}-${VERSION}.tar.xz"
+          cp -v eds-src/*.patch "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
+          cp -v eds-src/evolution-data-server.spec "$HOME/rpmbuild/SPECS/"
+          rpmbuild --define "_topdir $HOME/rpmbuild" -bb "$HOME/rpmbuild/SPECS/evolution-data-server.spec"
+          dnf install -y "$HOME"/rpmbuild/RPMS/*/*.rpm
+          rm -f "$HOME"/rpmbuild/RPMS/*/*.rpm
+
+      - name: Fetch upstream source tarball for evolution
+        run: |
+          NAME=$(awk -F': *' '/^Name:/{print $2; exit}' evolution-src/evolution.spec)
+          VERSION=$(awk -F': *' '/^Version:/{print $2; exit}' evolution-src/evolution.spec)
+          MAJMIN=$(echo "$VERSION" | cut -d. -f1,2)
+          curl -fL -o "$HOME/rpmbuild/SOURCES/${NAME}-${VERSION}.tar.xz" \
+            "https://download.gnome.org/sources/${NAME}/${MAJMIN}/${NAME}-${VERSION}.tar.xz"
+          dnf builddep -y ./evolution-src/evolution.spec
 
       - name: Stage patches, support files and spec
         run: |
-          cp -v *.patch "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
-          cp -v *.sh "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
-          cp -v *.sh.in "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
-          cp -v evolution.spec "$HOME/rpmbuild/SPECS/"
+          cp -v evolution-src/*.patch "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
+          cp -v evolution-src/*.sh "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
+          cp -v evolution-src/*.sh.in "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
+          cp -v evolution-src/evolution.spec "$HOME/rpmbuild/SPECS/"
 
       - name: Build .rpm
         run: rpmbuild --define "_topdir $HOME/rpmbuild" -bb "$HOME/rpmbuild/SPECS/evolution.spec"
