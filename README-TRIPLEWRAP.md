@@ -20,10 +20,12 @@ for the full design rationale, threat model, and RFC references
 
 - **`master`** — unmodified mirror of upstream GNOME `master`. Not touched;
   kept for diffing/rebasing against upstream.
-- **`triple-wrap-3.60.2`** *(this branch)* — upstream tag `3.60.2` plus two
+- **`triple-wrap`** *(this branch)* — upstream tag `3.60.2` plus two
   commits implementing triple-wrap in the composer. This is the branch a
-  future GNOME merge request would be built from.
-- **`debian-packaging`** — `triple-wrap-3.60.2` plus a Debian source package
+  future GNOME merge request would be built from. Rebased onto newer
+  upstream tags in place as they're adopted, rather than renamed per
+  version.
+- **`debian-packaging`** — `triple-wrap` plus a Debian source package
   (`debian/`, format `3.0 (quilt)`) that applies the same change via
   `debian/patches/0006`–`0007`. Builds with `dpkg-buildpackage` /
   `gbp buildpackage`.
@@ -49,15 +51,15 @@ function `composer_build_message_smime()`:
 
 A companion change lives in
 [`mward5/evolution-data-server`](https://github.com/mward5/evolution-data-server)
-(`triple-wrap-3.60.2` branch): a fallback parser in `camel-multipart-signed.c`
+(`triple-wrap` branch): a fallback parser in `camel-multipart-signed.c`
 so Evolution can read back triple-wrapped (and base64-bodied)
 `multipart/signed` messages that the normal MIME parser rejects.
 
 ## Building
 
 ```sh
-git clone -b triple-wrap-3.60.2 https://github.com/mward5/evolution.git
-git clone -b triple-wrap-3.60.2 https://github.com/mward5/evolution-data-server.git
+git clone -b triple-wrap https://github.com/mward5/evolution.git
+git clone -b triple-wrap https://github.com/mward5/evolution-data-server.git
 # build/install evolution-data-server first, then evolution, against it,
 # per the normal Evolution CMake build (see HACKING).
 ```
