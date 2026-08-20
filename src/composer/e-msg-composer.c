@@ -1315,13 +1315,42 @@ composer_build_message_smime (AsyncContext *context,
 				context->recipients->len - 1);
 	}
 
-	/* Triple-wrap (RFC 2634): when both sign and encrypt, add outer signature
-	 * over the encrypted body so Gmail/Broadcom can verify before decrypting. */
+	/* Triple-wrap (RFC 2634): when both signing and encrypting, add an outer
+	 * signature over the encrypted body, so that a gateway can verify the
+	 * message without being able to decrypt it. */
 	if (context->smime_sign && context->smime_encrypt) {
 		CamelCipherContext *cipher_outer;
+		CamelMimePart *encrypted_part;
 		CamelMimePart *outer_part;
 		CamelDataWrapper *outer_content;
+		const CamelNameValueArray *headers;
 		gboolean success;
+
+		/* RFC 2634 signs the enveloped-data body part, thus copy it out of the
+		 * message first. Signing the message itself would duplicate all of its
+		 * headers into the signed body, including the internal X-Evolution-*
+		 * ones, which are otherwise removed before the message is sent. */
+		encrypted_part = camel_mime_part_new ();
+		camel_medium_set_content (
+			CAMEL_MEDIUM (encrypted_part),
+			camel_medium_get_content (CAMEL_MEDIUM (context->message)));
+
+		headers = camel_medium_get_headers (CAMEL_MEDIUM (context->message));
+		if (headers) {
+			gint ii, length;
+			length = camel_name_value_array_get_length (headers);
+
+			for (ii = 0; ii < length; ii++) {
+				const gchar *header_name = NULL;
+				const gchar *header_value = NULL;
+
+				if (camel_name_value_array_get (headers, ii, &header_name, &header_value) &&
+				    header_name && g_ascii_strncasecmp (header_name, "Content-", 8) == 0)
+					camel_medium_set_header (
+						CAMEL_MEDIUM (encrypted_part),
+						header_name, header_value);
+			}
+		}
 
 		cipher_outer = camel_smime_context_new (context->session);
 		camel_smime_context_set_sign_mode (
@@ -1332,37 +1361,35 @@ composer_build_message_smime (AsyncContext *context,
 		success = camel_cipher_context_sign_sync (
 			cipher_outer, signing_certificate,
 			CAMEL_CIPHER_HASH_SHA256,
-			CAMEL_MIME_PART (context->message),
-			outer_part, cancellable, error);
+			encrypted_part, outer_part, cancellable, error);
 
 		g_object_unref (cipher_outer);
+		g_object_unref (encrypted_part);
 
 		if (!success) {
 			g_object_unref (outer_part);
 			return FALSE;
 		}
 
+		/* The Content-* headers left over from the encrypt step describe the
+		 * enveloped-data part, which is nested inside the multipart/signed now. */
+		camel_medium_remove_header (
+			CAMEL_MEDIUM (context->message), "Content-Disposition");
+		camel_medium_remove_header (
+			CAMEL_MEDIUM (context->message), "Content-Description");
+
 		outer_content = camel_medium_get_content (CAMEL_MEDIUM (outer_part));
 		camel_medium_set_content (
-			CAMEL_MEDIUM (context->message),
-			g_object_ref (outer_content));
+			CAMEL_MEDIUM (context->message), outer_content);
 		g_object_unref (outer_part);
 
-		/* Gmail compatibility: send multipart/signed body as 7bit (no base64).
-		 * Gmail and other clients expect boundaries in plain text. */
+		/* A multipart body cannot be base64-encoded (RFC 2045, Section 6.4),
+		 * but the encrypt step left the message claiming that it is. */
 		camel_mime_part_set_encoding (
 			CAMEL_MIME_PART (context->message),
 			CAMEL_TRANSFER_ENCODING_7BIT);
-		camel_data_wrapper_set_encoding (outer_content,
-			CAMEL_TRANSFER_ENCODING_7BIT);
-
-		/* Root must not be shown as attachment; clear encrypt-step headers. */
-		camel_mime_part_set_disposition (
-			CAMEL_MIME_PART (context->message), "inline");
-		camel_mime_part_set_filename (
-			CAMEL_MIME_PART (context->message), NULL);
-		camel_mime_part_set_description (
-			CAMEL_MIME_PART (context->message), "");
+		camel_data_wrapper_set_encoding (
+			outer_content, CAMEL_TRANSFER_ENCODING_7BIT);
 	}
 
 	/* we replaced the message directly, we don't want to do reparenting foo */
