@@ -11,9 +11,9 @@ triple-wrapped. This change makes Evolution emit the same structure. Why the
 structure changes the outcome has not been established — see the design
 document.
 
-**Status:** builds and runs; the generated messages have been verified
-structurally and cryptographically (see below), but **not** yet confirmed
-end-to-end through a gateway. Not submitted upstream.
+**Status:** working. Verified structurally and cryptographically, and confirmed
+end to end: a message from this build was rendered correctly, with no
+attachment, by a recipient behind such a gateway. Not submitted upstream.
 
 See [`docs/SMIME-Triple-Wrap-Design.md`](docs/SMIME-Triple-Wrap-Design.md) for
 the design, the signature scopes, and — importantly — the list of RFC 2634
@@ -55,8 +55,11 @@ The companion changes live in
 - Outer signature verifies with `openssl smime -verify`; the bytes it covers
   are the `enveloped-data` entity alone, with no RFC822 headers.
 - Inner signature covers the original body part, also with no RFC822 headers.
+- Sent through a mail security gateway to a recipient behind it, and rendered
+  with the body intact and no attachment. The reply came back triple-wrapped.
 
-Not verified: rendering through an actual gateway.
+Not verified: *why* the gateway treats the two layouts differently. The outcome
+is known; the mechanism is not.
 
 ## Branches
 
