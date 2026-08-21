@@ -1384,12 +1384,14 @@ composer_build_message_smime (AsyncContext *context,
 		g_object_unref (outer_part);
 
 		/* A multipart body cannot be base64-encoded (RFC 2045, Section 6.4),
-		 * but the encrypt step left the message claiming that it is. */
-		camel_mime_part_set_encoding (
-			CAMEL_MIME_PART (context->message),
-			CAMEL_TRANSFER_ENCODING_7BIT);
+		 * but the encrypt step left the message claiming that it is. The
+		 * header is removed rather than set to 7bit, to match the messages
+		 * which reach us through such a gateway, which carry none, and
+		 * because setting the default encoding writes an empty header. */
 		camel_data_wrapper_set_encoding (
-			outer_content, CAMEL_TRANSFER_ENCODING_7BIT);
+			outer_content, CAMEL_TRANSFER_ENCODING_DEFAULT);
+		camel_medium_remove_header (
+			CAMEL_MEDIUM (context->message), "Content-Transfer-Encoding");
 	}
 
 	/* we replaced the message directly, we don't want to do reparenting foo */
