@@ -1,71 +1,94 @@
 # Evolution — S/MIME Triple-Wrap fork
 
-This is a personal, experimental fork of [GNOME Evolution](https://gitlab.gnome.org/GNOME/evolution)
-that adds RFC 2634 S/MIME triple-wrapping (sign → encrypt → outer sign) to the
-composer, so that signed+encrypted mail can be verified and decrypted inline
-by mail security gateways that otherwise refuse to open opaque `smime.p7m`
-attachments (observed with Gmail Web behind a Broadcom/Symantec Email
-Security gateway).
+A personal, experimental fork of [GNOME Evolution](https://gitlab.gnome.org/GNOME/evolution)
+that makes the composer produce RFC 2634 §1.1 triple-wrapped messages
+(sign → encrypt → outer sign) when a message is both signed and encrypted.
 
-**Status:** working, tested against Gmail Web; not yet submitted upstream.
-Feedback welcome. The intent is to open a merge request against
-[gitlab.gnome.org/GNOME/evolution](https://gitlab.gnome.org/GNOME/evolution)
-once this has seen some real-world use.
+The problem it addresses: some mail security gateways deliver an ordinary
+signed+encrypted message with an empty body and an `smime.p7m` attachment,
+rather than rendering it. Messages arriving *from* those gateways are
+triple-wrapped. This change makes Evolution emit the same structure. Why the
+structure changes the outcome has not been established — see the design
+document.
 
-See [`docs/SMIME-Triple-Wrap-Design.md`](docs/SMIME-Triple-Wrap-Design.md)
-for the full design rationale, threat model, and RFC references
-(RFC 2634, RFC 5035, EID 6562).
+**Status:** builds and runs; the generated messages have been verified
+structurally and cryptographically (see below), but **not** yet confirmed
+end-to-end through a gateway. Not submitted upstream.
 
-## Branches
-
-- **`master`** — unmodified mirror of upstream GNOME `master`. Not touched;
-  kept for diffing/rebasing against upstream.
-- **`triple-wrap`** *(this branch)* — upstream tag `3.60.2` plus two
-  commits implementing triple-wrap in the composer. This is the branch a
-  future GNOME merge request would be built from. Rebased onto newer
-  upstream tags in place as they're adopted, rather than renamed per
-  version.
-- **`debian-packaging`** — `triple-wrap` plus a Debian source package
-  (`debian/`, format `3.0 (quilt)`) that applies the same change via
-  `debian/patches/0006`–`0007`. Builds with `dpkg-buildpackage` /
-  `gbp buildpackage`.
-- **`fedora-packaging`** — upstream `3.60.2` plus a Fedora dist-git style
-  `evolution.spec` and `Patch0001`/`Patch0002`. Builds with `fedpkg` /
-  `rpmbuild -bs` (fetch the `3.60.2` source tarball per `sources`).
+See [`docs/SMIME-Triple-Wrap-Design.md`](docs/SMIME-Triple-Wrap-Design.md) for
+the design, the signature scopes, and — importantly — the list of RFC 2634
+features this does *not* implement.
 
 ## What changed
 
-Two commits on top of upstream `3.60.2`, both in
-[`src/composer/e-msg-composer.c`](src/composer/e-msg-composer.c),
-function `composer_build_message_smime()`:
+Four commits on top of upstream `3.60.2`, all in
+[`src/composer/e-msg-composer.c`](src/composer/e-msg-composer.c), function
+`composer_build_message_smime()`:
 
 1. **`composer: triple-wrap S/MIME (sign→encrypt→outer sign) for Gmail`**
    When both S/MIME sign and encrypt are enabled, add an outer
-   `multipart/signed` (SHA-256) over the already-signed-and-encrypted
-   message, per RFC 2634. Sets the root part's disposition to `inline` and
-   clears its filename/description so it isn't shown as an `smime.p7m`
-   attachment, and sends the `multipart/signed` body as 7bit to match what
-   Gmail expects.
+   `multipart/signed` (SHA-256) over the encrypted body. (The vendor name in
+   this subject is a leftover from early development and comes out when the
+   series is squashed for upstream submission.)
 2. **`composer: pass "" to camel_mime_part_set_description (not NULL)`**
-   Fixes a `g_return_if_fail` rejection — Camel doesn't accept `NULL` there.
+   Camel rejects `NULL` there with a `g_return_if_fail`.
+3. **`composer: sign the enveloped-data part, not the whole message`**
+   The outer signature covered the entire message, which serialised every
+   RFC822 header into the signed body — including the internal
+   `X-Evolution-Identity`, `X-Evolution-Fcc` and `X-Evolution-Transport`
+   headers, which are otherwise stripped before sending. It now covers the
+   `enveloped-data` body part and its `Content-*` headers only.
+4. **`composer: do not write a transfer encoding for the outer multipart`**
+   The encrypt step left the message claiming `base64`, which a `multipart`
+   body may not use (RFC 2045 §6.4). Commits 2–4 also drop the leftover
+   `Content-Disposition` and `Content-Description` headers.
 
-A companion change lives in
+The companion changes live in
 [`mward5/evolution-data-server`](https://github.com/mward5/evolution-data-server)
-(`triple-wrap` branch): a fallback parser in `camel-multipart-signed.c`
-so Evolution can read back triple-wrapped (and base64-bodied)
-`multipart/signed` messages that the normal MIME parser rejects.
+(`triple-wrap` branch): a `multipart/signed` boundary-scan fallback and a
+`Content-Description` on the S/MIME signature part.
+
+## Verification
+
+- MIME structure identical to three triple-wrapped messages, from three
+  different senders, that transited a mail security gateway.
+- Outer signature verifies with `openssl smime -verify`; the bytes it covers
+  are the `enveloped-data` entity alone, with no RFC822 headers.
+- Inner signature covers the original body part, also with no RFC822 headers.
+
+Not verified: rendering through an actual gateway.
+
+## Branches
+
+- **`master`** — unmodified mirror of upstream GNOME `master`, for diffing and
+  rebasing.
+- **`triple-wrap`** *(this branch)* — upstream tag `3.60.2` plus the four
+  commits above. A future GNOME merge request would be built from here, after
+  squashing. Rebased onto newer upstream tags in place rather than renamed per
+  version.
+- **`debian-packaging`** — a Debian source package (format `3.0 (quilt)`)
+  applying the same changes via `debian/patches/0006`–`0009`. Builds with
+  `dpkg-buildpackage` / `gbp buildpackage`.
+- **`fedora-packaging`** — a Fedora dist-git style `evolution.spec` with
+  `Patch0001`–`Patch0004`. Builds with `fedpkg` / `rpmbuild -bs` (fetch the
+  `3.60.2` tarball per `sources`).
+
+Both packaging branches are regenerated from `triple-wrap` and keep no history
+of their own.
 
 ## Building
 
 ```sh
-git clone -b triple-wrap https://github.com/mward5/evolution.git
 git clone -b triple-wrap https://github.com/mward5/evolution-data-server.git
-# build/install evolution-data-server first, then evolution, against it,
-# per the normal Evolution CMake build (see HACKING).
+git clone -b triple-wrap https://github.com/mward5/evolution.git
 ```
 
-For a distro package instead, use the `debian-packaging` or
-`fedora-packaging` branch of each repo.
+Build and install evolution-data-server first, then evolution against it, per
+the normal CMake build (see `HACKING`). Both halves are required: the composer
+change alone does not give you a working triple-wrap round trip.
+
+For distro packages, use the `debian-packaging` or `fedora-packaging` branch of
+each repo instead.
 
 ## License
 
