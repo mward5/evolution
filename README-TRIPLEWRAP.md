@@ -4,12 +4,12 @@ A personal, experimental fork of [GNOME Evolution](https://gitlab.gnome.org/GNOM
 that makes the composer produce RFC 2634 §1.1 triple-wrapped messages
 (sign → encrypt → outer sign) when a message is both signed and encrypted.
 
-The problem it addresses: some mail security gateways deliver an ordinary
-signed+encrypted message with an empty body and an `smime.p7m` attachment,
-rather than rendering it. Messages arriving *from* those gateways are
-triple-wrapped. This change makes Evolution emit the same structure. Why the
-structure changes the outcome has not been established — see the design
-document.
+The problem it addresses: as a mitigation for the Efail vulnerability, Gmail
+decrypts only S/MIME messages that are triple wrapped per RFC 2634. An ordinary
+signed+encrypted message is delivered with an empty body and an `smime.p7m`
+attachment instead. Evolution could not produce the triple-wrapped form, so
+mail sent to such a recipient was unreadable. See the design document for the
+detail and the sources.
 
 **Status:** working. Verified structurally and cryptographically, and confirmed
 end to end: a message from this build was rendered correctly, with no
@@ -58,8 +58,9 @@ The companion changes live in
 - Sent through a mail security gateway to a recipient behind it, and rendered
   with the body intact and no attachment. The reply came back triple-wrapped.
 
-Not verified: *why* the gateway treats the two layouts differently. The outcome
-is known; the mechanism is not.
+Not verified: whether Google documents the triple-wrap requirement officially.
+The reason is well attested by third parties who had to interoperate with it,
+but no primary source has been found.
 
 ## Branches
 
