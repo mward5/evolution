@@ -13,7 +13,7 @@ detail and the sources.
 
 **Status:** working. Verified structurally and cryptographically, and confirmed
 end to end: a message from this build was rendered correctly, with no
-attachment, by a recipient behind such a gateway. Not submitted upstream.
+attachment, by a Google Workspace recipient. Not submitted upstream.
 
 See [`docs/SMIME-Triple-Wrap-Design.md`](docs/SMIME-Triple-Wrap-Design.md) for
 the design, the signature scopes, and — importantly — the list of RFC 2634
@@ -51,12 +51,12 @@ The companion changes live in
 ## Verification
 
 - MIME structure identical to three triple-wrapped messages, from three
-  different senders, that transited a mail security gateway.
+  different senders, sent from Google Workspace accounts.
 - Outer signature verifies with `openssl smime -verify`; the bytes it covers
   are the `enveloped-data` entity alone, with no RFC822 headers.
 - Inner signature covers the original body part, also with no RFC822 headers.
-- Sent through a mail security gateway to a recipient behind it, and rendered
-  with the body intact and no attachment. The reply came back triple-wrapped.
+- Sent to a Google Workspace recipient and rendered with the body intact and
+  no attachment. The reply came back triple-wrapped.
 
 Not verified: whether Google documents the triple-wrap requirement officially.
 The reason is well attested by third parties who had to interoperate with it,
