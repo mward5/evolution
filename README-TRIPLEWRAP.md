@@ -43,10 +43,9 @@ Four commits on top of upstream `3.60.2`, all in
    body may not use (RFC 2045 §6.4). Commits 2–4 also drop the leftover
    `Content-Disposition` and `Content-Description` headers.
 
-The companion changes live in
+The companion change lives in
 [`mward5/evolution-data-server`](https://github.com/mward5/evolution-data-server)
-(`triple-wrap` branch): a `multipart/signed` boundary-scan fallback and a
-`Content-Description` on the S/MIME signature part.
+(`triple-wrap` branch): a `Content-Description` on the S/MIME signature part.
 
 ## Verification
 
