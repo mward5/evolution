@@ -3,11 +3,12 @@
 ## 1. Scope
 
 This document describes the S/MIME triple-wrapping (sign → encrypt → sign)
-support added to the Evolution composer and to Camel, why it exists, and —
-importantly — which parts of RFC 2634 it does **not** implement.
+support added to the Evolution composer, why it exists, and — importantly —
+which parts of RFC 2634 it does **not** implement.
 
-It covers the send path in Evolution and one receive-side parsing fix in Camel.
-It is not an S/MIME tutorial.
+It covers the send path in Evolution. The triple-wrapping itself needs no change
+to Camel; this fork's only Camel change is a `Content-Description` on the S/MIME
+signature part. It is not an S/MIME tutorial.
 
 References:
 
