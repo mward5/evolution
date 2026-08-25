@@ -1344,8 +1344,10 @@ composer_build_message_smime (AsyncContext *context,
 				const gchar *header_name = NULL;
 				const gchar *header_value = NULL;
 
-				if (camel_name_value_array_get (headers, ii, &header_name, &header_value) &&
-				    header_name && g_ascii_strncasecmp (header_name, "Content-", 8) == 0)
+				if (camel_name_value_array_get (headers, ii,
+					&header_name, &header_value) &&
+				    header_name &&
+				    g_ascii_strncasecmp (header_name, "Content-", 8) == 0)
 					camel_medium_set_header (
 						CAMEL_MEDIUM (encrypted_part),
 						header_name, header_value);
@@ -1368,6 +1370,7 @@ composer_build_message_smime (AsyncContext *context,
 
 		if (!success) {
 			g_object_unref (outer_part);
+			g_object_unref (mime_part);
 			return FALSE;
 		}
 
@@ -1378,10 +1381,11 @@ composer_build_message_smime (AsyncContext *context,
 		camel_medium_remove_header (
 			CAMEL_MEDIUM (context->message), "Content-Description");
 
+		/* The content is owned by outer_part, which is thus unreferenced
+		 * only after the last use of it below. */
 		outer_content = camel_medium_get_content (CAMEL_MEDIUM (outer_part));
 		camel_medium_set_content (
 			CAMEL_MEDIUM (context->message), outer_content);
-		g_object_unref (outer_part);
 
 		/* A multipart body cannot be base64-encoded (RFC 2045, Section 6.4),
 		 * but the encrypt step left the message claiming that it is. The
@@ -1392,6 +1396,8 @@ composer_build_message_smime (AsyncContext *context,
 			outer_content, CAMEL_TRANSFER_ENCODING_DEFAULT);
 		camel_medium_remove_header (
 			CAMEL_MEDIUM (context->message), "Content-Transfer-Encoding");
+
+		g_object_unref (outer_part);
 	}
 
 	/* we replaced the message directly, we don't want to do reparenting foo */
