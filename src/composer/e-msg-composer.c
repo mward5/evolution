@@ -1245,15 +1245,17 @@ composer_build_message_smime (AsyncContext *context,
 
 		cipher = camel_smime_context_new (context->session);
 
-		/* if we're also encrypting, envelope-sign rather than clear-sign */
-		if (context->smime_encrypt) {
-			camel_smime_context_set_sign_mode (
-				(CamelSMIMEContext *) cipher,
-				CAMEL_SMIME_SIGN_ENVELOPED);
-			camel_smime_context_set_encrypt_key (
-				(CamelSMIMEContext *) cipher,
-				TRUE, encryption_certificate);
-		} else if (have_encryption_certificate) {
+		/* Triple-wrap (RFC 2634) needs the inner signature in the same
+		 * clear-sign (multipart/signed) form as the outer one below.
+		 * Broadcom/Gmail's own triple-wrapped mail uses multipart/signed
+		 * for both layers, and Thunderbird's receive-side S/MIME handling
+		 * does not recognize an opaque signed-data part nested inside a
+		 * decrypted envelope as a signature at all -- it only follows a
+		 * nested multipart/signed. camel_smime_context_new() already
+		 * defaults to CLEARSIGN, so there is nothing to set here; this
+		 * used to force CAMEL_SMIME_SIGN_ENVELOPED (opaque signed-data)
+		 * instead, from before the outer signature existed. */
+		if (context->smime_encrypt || have_encryption_certificate) {
 			camel_smime_context_set_encrypt_key (
 				(CamelSMIMEContext *) cipher,
 				TRUE, encryption_certificate);
