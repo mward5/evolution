@@ -248,27 +248,23 @@ secure_button_clicked_cb (EWebView *web_view,
 	if (!g_str_has_prefix (element_value, tmp))
 		return;
 
-	element_value += strlen (tmp);
-
+	/* There is one button for the whole part, and one details row per
+	 * validity -- a triple-wrapped message has one for each signature
+	 * layer -- so the button toggles all of them together. */
 	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 
-		if (!pair)
+		if (!pair || !pair->validity)
 			continue;
 
-		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "%p", pair->validity) < sizeof (tmp));
+		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "secure-button-details-%p", pair->validity) < sizeof (tmp));
 
-		if (g_strcmp0 (element_value, tmp) == 0) {
-			g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "secure-button-details-%p", pair->validity) < sizeof (tmp));
-
-			e_web_view_jsc_run_script (WEBKIT_WEB_VIEW (web_view), e_web_view_get_cancellable (web_view),
-				"var elem = Evo.FindElement(%s, %s);\n"
-				"if (elem) {\n"
-				"	elem.hidden = !elem.hidden;\n"
-				"}\n",
-				iframe_id, tmp);
-			break;
-		}
+		e_web_view_jsc_run_script (WEBKIT_WEB_VIEW (web_view), e_web_view_get_cancellable (web_view),
+			"var elem = Evo.FindElement(%s, %s);\n"
+			"if (elem) {\n"
+			"	elem.hidden = !elem.hidden;\n"
+			"}\n",
+			iframe_id, tmp);
 	}
 }
 

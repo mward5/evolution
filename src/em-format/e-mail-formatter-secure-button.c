@@ -324,74 +324,137 @@ add_details_part (GString *html,
 		details);
 }
 
-static void
-secure_button_format_validity (EMailPart *part,
-			       gboolean sender_signer_mismatch,
-			       CamelCipherValidity *validity,
-			       const gchar *layer_label,
-			       GString *html)
+/* Rank the sign statuses by how much they should worry the reader, so that a
+ * message carrying more than one signature can be summarised by its weakest
+ * one. The enum order does not express this. */
+static gint
+secure_button_sign_severity (CamelCipherValiditySign status)
 {
+	switch (status) {
+	case CAMEL_CIPHER_VALIDITY_SIGN_NONE:
+		return 0;
+	case CAMEL_CIPHER_VALIDITY_SIGN_GOOD:
+		return 1;
+	case CAMEL_CIPHER_VALIDITY_SIGN_NEED_PUBLIC_KEY:
+		return 2;
+	case CAMEL_CIPHER_VALIDITY_SIGN_UNKNOWN:
+		return 3;
+	case CAMEL_CIPHER_VALIDITY_SIGN_BAD:
+		return 4;
+	}
+
+	return 0;
+}
+
+static gboolean
+secure_button_cert_info_listed (GQueue *listed,
+				CamelCipherCertInfo *info)
+{
+	GList *link;
+
+	for (link = g_queue_peek_head_link (listed); link; link = g_list_next (link)) {
+		CamelCipherCertInfo *known = link->data;
+
+		if (g_strcmp0 (known->email, info->email) == 0 &&
+		    g_strcmp0 (known->name, info->name) == 0)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/* The collapsed row, summarising every validity on the part at once: the
+ * weakest signature status picks the icon and the colour, and the signers are
+ * listed together, so a triple-wrapped message signed by two different
+ * certificates reads as "Valid signature (mike@example.com, dlp@example.net)"
+ * and one signed twice by the same certificate reads exactly as a singly
+ * signed message does. Which signature belongs to which layer is left to the
+ * details rows.
+ *
+ * Opens the table the details rows are appended to; returns FALSE, having
+ * written nothing, when the part carries no validity at all. */
+static gboolean
+secure_button_format_summary (EMailPart *part,
+			      GString *html)
+{
+	CamelCipherValidity *first_validity = NULL;
+	CamelCipherValidityEncrypt encrypt_status = CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE;
+	CamelCipherValiditySign sign_status = CAMEL_CIPHER_VALIDITY_SIGN_NONE;
+	GQueue signers = G_QUEUE_INIT;
+	GQueue *encrypters = NULL;
+	GString *buffer;
+	GList *link;
 	const gchar *icon_name;
 	gchar *description;
+	gboolean sender_signer_mismatch = FALSE;
 	gint icon_width, icon_height;
 	gint info_index;
-	guint length;
-	GString *buffer;
 
-	g_return_if_fail (validity != NULL);
+	for (link = g_queue_peek_head_link (&part->validities); link; link = g_list_next (link)) {
+		EMailPartValidityPair *pair = link->data;
+		GList *link2;
+
+		if (!pair || !pair->validity)
+			continue;
+
+		if (!first_validity)
+			first_validity = pair->validity;
+
+		if (secure_button_sign_severity (pair->validity->sign.status) >
+		    secure_button_sign_severity (sign_status)) {
+			sign_status = pair->validity->sign.status;
+			sender_signer_mismatch = (pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0;
+		}
+
+		if (pair->validity->encrypt.status > encrypt_status) {
+			encrypt_status = pair->validity->encrypt.status;
+			encrypters = &pair->validity->encrypt.encrypters;
+		}
+
+		for (link2 = g_queue_peek_head_link (&pair->validity->sign.signers); link2; link2 = g_list_next (link2)) {
+			CamelCipherCertInfo *info = link2->data;
+
+			if (!secure_button_cert_info_listed (&signers, info))
+				g_queue_push_tail (&signers, info);
+		}
+	}
+
+	if (!first_validity)
+		return FALSE;
 
 	buffer = g_string_new ("");
 
-	if (validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE) {
+	if (sign_status != CAMEL_CIPHER_VALIDITY_SIGN_NONE) {
 		const gchar *desc = NULL;
-		gint status;
 
-		status = validity->sign.status;
-
-		format_cert_infos (&validity->sign.signers, buffer);
+		format_cert_infos (&signers, buffer);
 
 		if (sender_signer_mismatch)
-			desc = smime_sign_table[status].shortdesc_mismatch;
+			desc = smime_sign_table[sign_status].shortdesc_mismatch;
 		if (!desc)
-			desc = smime_sign_table[status].shortdesc;
+			desc = smime_sign_table[sign_status].shortdesc;
 
 		g_string_prepend (buffer, gettext (desc));
 	}
 
-	if (validity->encrypt.status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE) {
-		const gchar *desc;
-		gint status;
-
-		if (validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE)
+	if (encrypt_status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE) {
+		if (sign_status != CAMEL_CIPHER_VALIDITY_SIGN_NONE)
 			g_string_append (buffer, "<br>\n");
 
-		status = validity->encrypt.status;
-		desc = smime_encrypt_table[status].shortdesc;
-		g_string_append (buffer, gettext (desc));
-	}
-
-	if (layer_label && *layer_label) {
-		gchar *escaped, *markup;
-
-		escaped = g_markup_escape_text (layer_label, -1);
-		markup = g_strdup_printf ("<b>%s</b><br>\n", escaped);
-		g_string_prepend (buffer, markup);
-
-		g_free (markup);
-		g_free (escaped);
+		g_string_append (buffer, gettext (smime_encrypt_table[encrypt_status].shortdesc));
 	}
 
 	description = g_string_free (buffer, FALSE);
 
-	info_index = validity->sign.status;
+	info_index = sign_status;
 	if (sender_signer_mismatch && info_index == CAMEL_CIPHER_VALIDITY_SIGN_GOOD)
 		info_index = CAMEL_CIPHER_VALIDITY_SIGN_UNKNOWN;
 
 	/* FIXME: need to have it based on encryption and signing too */
-	if (validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE)
+	if (sign_status != CAMEL_CIPHER_VALIDITY_SIGN_NONE)
 		icon_name = smime_sign_table[info_index].icon;
 	else
-		icon_name = smime_encrypt_table[validity->encrypt.status].icon;
+		icon_name = smime_encrypt_table[encrypt_status].icon;
 
 	if (!gtk_icon_size_lookup (GTK_ICON_SIZE_LARGE_TOOLBAR, &icon_width, &icon_height)) {
 		icon_width = 24;
@@ -399,7 +462,7 @@ secure_button_format_validity (EMailPart *part,
 	}
 
 	g_string_append (html, "<table width=\"100%\" style=\"margin-bottom:4px; vertical-align:middle;");
-	if (validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE &&
+	if (sign_status != CAMEL_CIPHER_VALIDITY_SIGN_NONE &&
 	    smime_sign_colour[info_index].alpha > 1e-9) {
 		g_string_append_printf (html, " background:#%06x; color:#%06x;",
 			e_rgba_to_value (&smime_sign_colour[info_index]),
@@ -410,19 +473,43 @@ secure_button_format_validity (EMailPart *part,
 	g_string_append_printf (html,
 		"<td style=\"width:1px;\"><button type=\"button\" class=\"secure-button\" id=\"secure-button\" value=\"%p:%p\" accesskey=\"\" style=\"vertical-align:middle;\">"
 		"<img src=\"gtk-stock://%s?size=%d\" width=\"%dpx\" height=\"%dpx\" style=\"vertical-align:middle;\"></button></td><td><span style=\"vertical-align:middle;\">",
-		part, validity, icon_name, GTK_ICON_SIZE_LARGE_TOOLBAR,
+		part, first_validity, icon_name, GTK_ICON_SIZE_LARGE_TOOLBAR,
 		icon_width, icon_height);
 
-	g_queue_foreach (&validity->sign.signers, add_photo_cb, html);
-	g_queue_foreach (&validity->encrypt.encrypters, add_photo_cb, html);
+	g_queue_foreach (&signers, add_photo_cb, html);
+	if (encrypters)
+		g_queue_foreach (encrypters, add_photo_cb, html);
 
 	g_string_append_printf (html, "%s</span></td></tr>", description);
 
+	g_queue_clear (&signers);
+	g_free (description);
+
+	return TRUE;
+}
+
+/* One hidden row per validity, revealed by the button in the collapsed row.
+ * @layer_label names the layer when the message has more than one. */
+static void
+secure_button_format_details (EMailPart *part,
+			      CamelCipherValidity *validity,
+			      const gchar *layer_label,
+			      GString *html)
+{
+	guint length;
+
+	g_return_if_fail (validity != NULL);
+
 	e_util_markup_append_escaped (html,
-		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>"
+		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>",
+		validity);
+
+	if (layer_label && *layer_label)
+		e_util_markup_append_escaped (html, "<b>%s</b><br><br>", layer_label);
+
+	e_util_markup_append_escaped (html,
 		"<b>%s</b><br>"
 		"%s<br>",
-		validity,
 		_("Digital Signature"),
 		secure_button_get_sign_description (validity->sign.status));
 
@@ -452,9 +539,7 @@ secure_button_format_validity (EMailPart *part,
 
 	add_details_part (html, part, validity, validity->encrypt.description, "encr");
 
-	g_string_append (html, "</small></td></tr></table>\n");
-
-	g_free (description);
+	g_string_append (html, "</small></td></tr>\n");
 }
 
 static gboolean
@@ -484,36 +569,36 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
 		has_outer = pair && (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
 	}
 
-	/* Without an outer signature there is a single layer, so the pairs are
-	 * shown in the order they were found and are not labelled. With one --
-	 * an RFC 2634 triple-wrapped message -- show the outer signature first:
-	 * it is what covers the message as it travelled, so it is the one that
-	 * fails if the message was tampered with, and burying it under the
-	 * inner signature's result would hide that. */
-	for (pass = 0; pass <= (has_outer ? 1 : 0); pass++) {
-		for (link = head; link != NULL; link = g_list_next (link)) {
-			EMailPartValidityPair *pair = link->data;
-			const gchar *layer_label = NULL;
-			gboolean sender_signer_mismatch;
-			gboolean is_outer;
+	if (secure_button_format_summary (part, html)) {
+		/* With an outer signature -- an RFC 2634 triple-wrapped message
+		 * -- put its details first: it covers the message as it
+		 * travelled, so it is the one that fails if the message was
+		 * altered in transit. */
+		for (pass = 0; pass <= (has_outer ? 1 : 0); pass++) {
+			for (link = head; link != NULL; link = g_list_next (link)) {
+				EMailPartValidityPair *pair = link->data;
+				const gchar *layer_label = NULL;
+				gboolean is_outer;
 
-			if (!pair)
-				continue;
-
-			is_outer = (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
-
-			if (has_outer) {
-				if (is_outer != (pass == 0))
+				if (!pair || !pair->validity)
 					continue;
 
-				layer_label = is_outer ?
-					_("Outer signature (over the encrypted message)") :
-					_("Inner signature (over the message content)");
-			}
+				is_outer = (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
 
-			sender_signer_mismatch = (pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0;
-			secure_button_format_validity (part, sender_signer_mismatch, pair->validity, layer_label, html);
+				if (has_outer) {
+					if (is_outer != (pass == 0))
+						continue;
+
+					layer_label = is_outer ?
+						_("Outer signature (over the encrypted message)") :
+						_("Inner signature (over the message content)");
+				}
+
+				secure_button_format_details (part, pair->validity, layer_label, html);
+			}
 		}
+
+		g_string_append (html, "</table>\n");
 	}
 
 	g_output_stream_write_all (stream, html->str, html->len, NULL, cancellable, NULL);
