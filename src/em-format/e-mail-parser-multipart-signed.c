@@ -42,6 +42,20 @@ static const gchar *parser_mime_types[] = {
 };
 
 static gboolean
+empe_mp_signed_is_signature_type (CamelContentType *content_type)
+{
+	if (!content_type)
+		return FALSE;
+
+	/* The same spellings the protocol dispatch below accepts. */
+	return camel_content_type_is (content_type, "application", "pkcs7-signature") ||
+		camel_content_type_is (content_type, "application", "xpkcs7signature") ||
+		camel_content_type_is (content_type, "application", "xpkcs7-signature") ||
+		camel_content_type_is (content_type, "application", "x-pkcs7-signature") ||
+		camel_content_type_is (content_type, "application", "pgp-signature");
+}
+
+static gboolean
 empe_mp_signed_parse (EMailParserExtension *extension,
                       EMailParser *parser,
                       CamelMimePart *part,
@@ -181,6 +195,18 @@ empe_mp_signed_parse (EMailParserExtension *extension,
 		CamelMimePart *subpart;
 
 		subpart = camel_multipart_get_part (multipart, i);
+
+		/* The signature part proves the content, it is not content
+		 * itself, so there is nothing to show for it. Skip it here,
+		 * rather than dispatching it and leaving its handler to work
+		 * out that the parent is this multipart/signed: that lookup
+		 * walks the message tree, which does not reach a
+		 * multipart/signed recovered from a decrypted part (the inner
+		 * layer of a triple-wrapped message lives in the decrypted
+		 * copy, not in the message), so the signature ended up being
+		 * shown as an attachment. */
+		if (empe_mp_signed_is_signature_type (camel_mime_part_get_content_type (subpart)))
+			continue;
 
 		g_string_append_printf (part_id, ".signed.%d", i);
 
