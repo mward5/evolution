@@ -496,6 +496,8 @@ secure_button_format_details (EMailPart *part,
 			      const gchar *layer_label,
 			      GString *html)
 {
+	gboolean per_layer = layer_label && *layer_label;
+	gboolean wrote_any = FALSE;
 	guint length;
 
 	g_return_if_fail (validity != NULL);
@@ -504,40 +506,55 @@ secure_button_format_details (EMailPart *part,
 		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>",
 		validity);
 
-	if (layer_label && *layer_label)
+	if (per_layer)
 		e_util_markup_append_escaped (html, "<b>%s</b><br><br>", layer_label);
 
-	e_util_markup_append_escaped (html,
-		"<b>%s</b><br>"
-		"%s<br>",
-		_("Digital Signature"),
-		secure_button_get_sign_description (validity->sign.status));
+	/* A single layer reports both headings even when one of them has
+	 * nothing to say, because "this message is not encrypted" is a warning
+	 * worth making in its own right. Per layer it is not: each layer of a
+	 * triple-wrapped message carries one of the two, so noting that the
+	 * outer signature applies no encryption is accurate but of no interest,
+	 * an outer signature never does -- while still being worded as a
+	 * warning, on a message that is encrypted. Report what the layer has. */
+	if (!per_layer || validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE) {
+		e_util_markup_append_escaped (html,
+			"<b>%s</b><br>"
+			"%s<br>",
+			_("Digital Signature"),
+			secure_button_get_sign_description (validity->sign.status));
 
-	length = g_queue_get_length (&validity->sign.signers);
-	if (length) {
-		add_cert_table (html,
-			g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length),
-			&validity->sign.signers,
-			length, part, validity);
+		length = g_queue_get_length (&validity->sign.signers);
+		if (length) {
+			add_cert_table (html,
+				g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length),
+				&validity->sign.signers,
+				length, part, validity);
+		}
+
+		add_details_part (html, part, validity, validity->sign.description, "sign");
+
+		wrote_any = TRUE;
 	}
 
-	add_details_part (html, part, validity, validity->sign.description, "sign");
+	if (!per_layer || validity->encrypt.status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE) {
+		if (wrote_any)
+			g_string_append (html, "<br>");
 
-	e_util_markup_append_escaped (html,
-		"<br>"
-		"<b>%s</b><br>"
-		"%s<br>",
-		_("Encryption"),
-		secure_button_get_encrypt_description (validity->encrypt.status));
+		e_util_markup_append_escaped (html,
+			"<b>%s</b><br>"
+			"%s<br>",
+			_("Encryption"),
+			secure_button_get_encrypt_description (validity->encrypt.status));
 
-	length = g_queue_get_length (&validity->encrypt.encrypters);
-	if (length) {
-		add_cert_table (html, _("Encrypted by:"),
-			&validity->encrypt.encrypters,
-			length, part, validity);
+		length = g_queue_get_length (&validity->encrypt.encrypters);
+		if (length) {
+			add_cert_table (html, _("Encrypted by:"),
+				&validity->encrypt.encrypters,
+				length, part, validity);
+		}
+
+		add_details_part (html, part, validity, validity->encrypt.description, "encr");
 	}
-
-	add_details_part (html, part, validity, validity->encrypt.description, "encr");
 
 	g_string_append (html, "</small></td></tr>\n");
 }
