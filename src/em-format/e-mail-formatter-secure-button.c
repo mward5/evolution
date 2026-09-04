@@ -328,6 +328,7 @@ static void
 secure_button_format_validity (EMailPart *part,
 			       gboolean sender_signer_mismatch,
 			       CamelCipherValidity *validity,
+			       const gchar *layer_label,
 			       GString *html)
 {
 	const gchar *icon_name;
@@ -367,6 +368,17 @@ secure_button_format_validity (EMailPart *part,
 		status = validity->encrypt.status;
 		desc = smime_encrypt_table[status].shortdesc;
 		g_string_append (buffer, gettext (desc));
+	}
+
+	if (layer_label && *layer_label) {
+		gchar *escaped, *markup;
+
+		escaped = g_markup_escape_text (layer_label, -1);
+		markup = g_strdup_printf ("<b>%s</b><br>\n", escaped);
+		g_string_prepend (buffer, markup);
+
+		g_free (markup);
+		g_free (escaped);
 	}
 
 	description = g_string_free (buffer, FALSE);
@@ -455,6 +467,8 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
 {
 	GList *head, *link;
 	GString *html;
+	gboolean has_outer = FALSE;
+	gint pass;
 
 	if ((context->mode != E_MAIL_FORMATTER_MODE_NORMAL) &&
 	    (context->mode != E_MAIL_FORMATTER_MODE_RAW) &&
@@ -464,15 +478,42 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
 	html = g_string_new ("");
 	head = g_queue_peek_head_link (&part->validities);
 
-	for (link = head; link != NULL; link = g_list_next (link)) {
+	for (link = head; link != NULL && !has_outer; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
-		gboolean sender_signer_mismatch;
 
-		if (!pair)
-			continue;
+		has_outer = pair && (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
+	}
 
-		sender_signer_mismatch = (pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0;
-		secure_button_format_validity (part, sender_signer_mismatch, pair->validity, html);
+	/* Without an outer signature there is a single layer, so the pairs are
+	 * shown in the order they were found and are not labelled. With one --
+	 * an RFC 2634 triple-wrapped message -- show the outer signature first:
+	 * it is what covers the message as it travelled, so it is the one that
+	 * fails if the message was tampered with, and burying it under the
+	 * inner signature's result would hide that. */
+	for (pass = 0; pass <= (has_outer ? 1 : 0); pass++) {
+		for (link = head; link != NULL; link = g_list_next (link)) {
+			EMailPartValidityPair *pair = link->data;
+			const gchar *layer_label = NULL;
+			gboolean sender_signer_mismatch;
+			gboolean is_outer;
+
+			if (!pair)
+				continue;
+
+			is_outer = (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
+
+			if (has_outer) {
+				if (is_outer != (pass == 0))
+					continue;
+
+				layer_label = is_outer ?
+					_("Outer signature (over the encrypted message)") :
+					_("Inner signature (over the message content)");
+			}
+
+			sender_signer_mismatch = (pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0;
+			secure_button_format_validity (part, sender_signer_mismatch, pair->validity, layer_label, html);
+		}
 	}
 
 	g_output_stream_write_all (stream, html->str, html->len, NULL, cancellable, NULL);

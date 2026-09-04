@@ -658,6 +658,34 @@ mail_part_find_validity_pair (EMailPart *part,
 	return NULL;
 }
 
+/* Like mail_part_find_validity_pair(), but only considers pairs belonging to
+ * the same layer, that is, pairs whose E_MAIL_PART_VALIDITY_OUTER bit matches
+ * @outer. */
+static EMailPartValidityPair *
+mail_part_find_validity_pair_in_layer (EMailPart *part,
+                                       EMailPartValidityFlags validity_type,
+                                       EMailPartValidityFlags outer)
+{
+	GList *head, *link;
+
+	head = g_queue_peek_head_link (&part->validities);
+
+	for (link = head; link != NULL; link = g_list_next (link)) {
+		EMailPartValidityPair *pair = link->data;
+
+		if (pair == NULL)
+			continue;
+
+		if ((pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != outer)
+			continue;
+
+		if ((pair->validity_type & validity_type) == validity_type)
+			return pair;
+	}
+
+	return NULL;
+}
+
 /**
  * e_mail_part_update_validity:
  * @part: An #EMailPart
@@ -691,7 +719,14 @@ e_mail_part_update_validity (EMailPart *part,
 	    validity->encrypt.status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE)
 		validity_type |= E_MAIL_PART_VALIDITY_ENCRYPTED;
 
-	pair = mail_part_find_validity_pair (part, validity_type & mask);
+	/* A signature applied over already-encrypted content -- the outer
+	 * signature of an RFC 2634 triple-wrapped message -- is a separate
+	 * result from the signature found inside the encryption, so it gets its
+	 * own pair rather than being merged into the inner one:
+	 * camel_cipher_validity_envelope() has no case for that nesting and
+	 * would silently drop one of the two. */
+	pair = mail_part_find_validity_pair_in_layer (part, validity_type & mask,
+		validity_type & E_MAIL_PART_VALIDITY_OUTER);
 	if (pair != NULL) {
 		pair->validity_type |= validity_type;
 		camel_cipher_validity_envelope (pair->validity, validity);
