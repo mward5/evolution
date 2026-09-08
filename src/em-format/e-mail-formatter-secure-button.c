@@ -363,18 +363,35 @@ secure_button_cert_info_listed (GQueue *listed,
 	return FALSE;
 }
 
-/* The collapsed row, summarising every validity on the part at once: the
- * weakest signature status picks the icon and the colour, and the signers are
- * listed together, so a triple-wrapped message signed by two different
- * certificates reads as "Valid signature (mike@example.com, dlp@example.net)"
- * and one signed twice by the same certificate reads exactly as a singly
- * signed message does. Which signature belongs to which layer is left to the
- * details rows.
+#define SECURE_BUTTON_SYSTEMS \
+	(E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)
+
+/* Whether @pair belongs to @system, which is the PGP bit, the S/MIME bit, or 0
+ * for a validity that named neither. */
+static gboolean
+secure_button_pair_is_system (EMailPartValidityPair *pair,
+			      EMailPartValidityFlags system)
+{
+	if (!pair || !pair->validity)
+		return FALSE;
+
+	return (pair->validity_type & SECURE_BUTTON_SYSTEMS) == system;
+}
+
+/* The collapsed row for one crypto system, summarising that system's
+ * validities together: the weakest signature status picks the icon and the
+ * colour, and the signers are listed as one, so a triple-wrapped message signed
+ * by two different certificates reads as
+ * "Valid signature (mike@example.com, dlp@example.net)" and one signed twice by
+ * the same certificate reads exactly as a singly signed message does. Which
+ * signature belongs to which layer is left to the details rows.
  *
  * Opens the table the details rows are appended to; returns FALSE, having
- * written nothing, when the part carries no validity at all. */
+ * written nothing, when the part carries no validity for @system. */
 static gboolean
 secure_button_format_summary (EMailPart *part,
+			      EMailPartValidityFlags system,
+			      const gchar *system_label,
 			      GString *html)
 {
 	CamelCipherValidity *first_validity = NULL;
@@ -394,7 +411,7 @@ secure_button_format_summary (EMailPart *part,
 		EMailPartValidityPair *pair = link->data;
 		GList *link2;
 
-		if (!pair || !pair->validity)
+		if (!secure_button_pair_is_system (pair, system))
 			continue;
 
 		if (!first_validity)
@@ -442,6 +459,17 @@ secure_button_format_summary (EMailPart *part,
 			g_string_append (buffer, "<br>\n");
 
 		g_string_append (buffer, gettext (smime_encrypt_table[encrypt_status].shortdesc));
+	}
+
+	if (system_label && *system_label) {
+		gchar *escaped, *markup;
+
+		escaped = g_markup_escape_text (system_label, -1);
+		markup = g_strdup_printf ("<b>%s</b>&nbsp;&mdash; ", escaped);
+		g_string_prepend (buffer, markup);
+
+		g_free (markup);
+		g_free (escaped);
 	}
 
 	description = g_string_free (buffer, FALSE);
@@ -559,6 +587,63 @@ secure_button_format_details (EMailPart *part,
 	g_string_append (html, "</small></td></tr>\n");
 }
 
+/* One bar for one crypto system: the collapsed summary, then a details row for
+ * each of that system's validities, outer signature first where there is one. */
+static void
+secure_button_format_system (EMailPart *part,
+			     EMailPartValidityFlags system,
+			     const gchar *system_label,
+			     GString *html)
+{
+	GList *head, *link;
+	gboolean has_outer = FALSE;
+	gint pass;
+
+	head = g_queue_peek_head_link (&part->validities);
+
+	for (link = head; link != NULL && !has_outer; link = g_list_next (link)) {
+		EMailPartValidityPair *pair = link->data;
+
+		has_outer = secure_button_pair_is_system (pair, system) &&
+			(pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
+	}
+
+	if (!secure_button_format_summary (part, system, system_label, html))
+		return;
+
+	/* Without an outer signature there is a single layer, so the validities
+	 * are shown in the order they were found and are not labelled. With one
+	 * -- an RFC 2634 triple-wrapped message -- show the outer signature
+	 * first: it is what covers the message as it travelled, so it is the
+	 * one that fails if the message was tampered with, and burying it under
+	 * the inner signature's result would hide that. */
+	for (pass = 0; pass <= (has_outer ? 1 : 0); pass++) {
+		for (link = head; link != NULL; link = g_list_next (link)) {
+			EMailPartValidityPair *pair = link->data;
+			const gchar *layer_label = NULL;
+			gboolean is_outer;
+
+			if (!secure_button_pair_is_system (pair, system))
+				continue;
+
+			is_outer = (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
+
+			if (has_outer) {
+				if (is_outer != (pass == 0))
+					continue;
+
+				layer_label = is_outer ?
+					_("Outer signature (over the encrypted message)") :
+					_("Inner signature (over the message content)");
+			}
+
+			secure_button_format_details (part, pair->validity, layer_label, html);
+		}
+	}
+
+	g_string_append (html, "</table>\n");
+}
+
 static gboolean
 emfe_secure_button_format (EMailFormatterExtension *extension,
                            EMailFormatter *formatter,
@@ -567,55 +652,61 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
                            GOutputStream *stream,
                            GCancellable *cancellable)
 {
+	/* PGP, S/MIME, and a validity naming neither. */
+	EMailPartValidityFlags systems[3];
 	GList *head, *link;
 	GString *html;
-	gboolean has_outer = FALSE;
-	gint pass;
+	guint n_systems = 0, ii;
 
 	if ((context->mode != E_MAIL_FORMATTER_MODE_NORMAL) &&
 	    (context->mode != E_MAIL_FORMATTER_MODE_RAW) &&
 	    (context->mode != E_MAIL_FORMATTER_MODE_ALL_HEADERS))
 		return FALSE;
 
-	html = g_string_new ("");
 	head = g_queue_peek_head_link (&part->validities);
 
-	for (link = head; link != NULL && !has_outer; link = g_list_next (link)) {
+	/* One bar per crypto system, in the order each first appears -- for a
+	 * message signed with both, the order the layers were applied.
+	 *
+	 * PGP and S/MIME are independent results about the same message, and
+	 * summarising them together would put a GPG signer on the S/MIME
+	 * signature line and let a bad signature under one system recolour the
+	 * other. Within a system the layers do get merged, which is what the
+	 * inner and outer signatures of a triple-wrapped message want. */
+	for (link = head; link != NULL && n_systems < G_N_ELEMENTS (systems); link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
+		EMailPartValidityFlags system;
+		gboolean known = FALSE;
 
-		has_outer = pair && (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
+		if (!pair || !pair->validity)
+			continue;
+
+		system = pair->validity_type & SECURE_BUTTON_SYSTEMS;
+
+		for (ii = 0; ii < n_systems && !known; ii++)
+			known = systems[ii] == system;
+
+		if (!known)
+			systems[n_systems++] = system;
 	}
 
-	if (secure_button_format_summary (part, html)) {
-		/* With an outer signature -- an RFC 2634 triple-wrapped message
-		 * -- put its details first: it covers the message as it
-		 * travelled, so it is the one that fails if the message was
-		 * altered in transit. */
-		for (pass = 0; pass <= (has_outer ? 1 : 0); pass++) {
-			for (link = head; link != NULL; link = g_list_next (link)) {
-				EMailPartValidityPair *pair = link->data;
-				const gchar *layer_label = NULL;
-				gboolean is_outer;
+	html = g_string_new ("");
 
-				if (!pair || !pair->validity)
-					continue;
+	for (ii = 0; ii < n_systems; ii++) {
+		const gchar *system_label = NULL;
 
-				is_outer = (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
-
-				if (has_outer) {
-					if (is_outer != (pass == 0))
-						continue;
-
-					layer_label = is_outer ?
-						_("Outer signature (over the encrypted message)") :
-						_("Inner signature (over the message content)");
-				}
-
-				secure_button_format_details (part, pair->validity, layer_label, html);
-			}
+		/* Name the system only when the message carries more than one,
+		 * so an ordinary signed message reads exactly as it always has
+		 * and the name appears just where the bars would otherwise be
+		 * indistinguishable. */
+		if (n_systems > 1) {
+			if (systems[ii] == E_MAIL_PART_VALIDITY_PGP)
+				system_label = _("GPG");
+			else if (systems[ii] == E_MAIL_PART_VALIDITY_SMIME)
+				system_label = _("S/MIME");
 		}
 
-		g_string_append (html, "</table>\n");
+		secure_button_format_system (part, systems[ii], system_label, html);
 	}
 
 	g_output_stream_write_all (stream, html->str, html->len, NULL, cancellable, NULL);

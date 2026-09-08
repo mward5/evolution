@@ -235,7 +235,9 @@ secure_button_clicked_cb (EWebView *web_view,
 			  gpointer user_data)
 {
 	EMailPart *mail_part = user_data;
+	EMailPartValidityFlags system = 0;
 	GList *link;
+	gboolean found = FALSE;
 	gchar tmp[128];
 
 	g_return_if_fail (E_IS_MAIL_PART_SECURE_BUTTON (mail_part));
@@ -248,13 +250,38 @@ secure_button_clicked_cb (EWebView *web_view,
 	if (!g_str_has_prefix (element_value, tmp))
 		return;
 
-	/* There is one button for the whole part, and one details row per
-	 * validity -- a triple-wrapped message has one for each signature
-	 * layer -- so the button toggles all of them together. */
+	element_value += strlen (tmp);
+
+	/* There is one button per crypto system, and one details row per
+	 * validity within it -- a triple-wrapped message has one for each
+	 * signature layer -- so the button toggles its own system's rows and
+	 * leaves any other system's bar alone. The button carries the first
+	 * validity of its system, which is what identifies the group here. */
 	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 
 		if (!pair || !pair->validity)
+			continue;
+
+		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "%p", pair->validity) < sizeof (tmp));
+
+		if (g_strcmp0 (element_value, tmp) == 0) {
+			system = pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME);
+			found = TRUE;
+			break;
+		}
+	}
+
+	if (!found)
+		return;
+
+	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
+		EMailPartValidityPair *pair = link->data;
+
+		if (!pair || !pair->validity)
+			continue;
+
+		if ((pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)) != system)
 			continue;
 
 		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "secure-button-details-%p", pair->validity) < sizeof (tmp));
