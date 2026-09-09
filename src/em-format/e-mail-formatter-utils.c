@@ -592,6 +592,7 @@ e_mail_formatter_format_security_header (EMailFormatter *formatter,
 	GQueue queue = G_QUEUE_INIT;
 	GList *head, *link;
 	guint32 check_valid_flags = 0;
+	gboolean present[G_N_ELEMENTS (validity_flags)] = { FALSE, };
 	gint part_id_prefix_len;
 	gboolean is_partial = FALSE;
 	guint ii;
@@ -633,8 +634,10 @@ e_mail_formatter_format_security_header (EMailFormatter *formatter,
 			} else {
 				guint32 validies = 0;
 				for (ii = 0; ii < G_N_ELEMENTS (validity_flags); ii++) {
-					if (e_mail_part_get_validity (mail_part, validity_flags[ii].flags))
+					if (e_mail_part_get_validity (mail_part, validity_flags[ii].flags)) {
 						validies |= validity_flags[ii].flags;
+						present[ii] = TRUE;
+					}
 				}
 				check_valid_flags |= validies;
 			}
@@ -666,7 +669,27 @@ e_mail_formatter_format_security_header (EMailFormatter *formatter,
 					break;
 				}
 
-				is_partial = !e_mail_part_get_validity (mail_part, check_valid_flags);
+				/* Check each entry on its own rather than asking a
+				 * single validity pair to satisfy check_valid_flags as
+				 * a whole. A pair only ever describes one crypto
+				 * system -- e_mail_part_update_validity() keeps PGP and
+				 * S/MIME in separate pairs by design -- so the combined
+				 * lookup can never succeed on a message carrying both,
+				 * and every such message read as partially secured
+				 * however completely it was covered.
+				 *
+				 * The merged mask cannot be tested entry-wise either:
+				 * with PGP-signed and S/MIME-encrypted present it
+				 * contains the bits of "S/MIME signed" without any part
+				 * being S/MIME signed. Which entries genuinely appear
+				 * is recorded separately, above. */
+				for (ii = 0; ii < G_N_ELEMENTS (validity_flags); ii++) {
+					if (present[ii] &&
+					    !e_mail_part_get_validity (mail_part, validity_flags[ii].flags)) {
+						is_partial = TRUE;
+						break;
+					}
+				}
 
 				/* Do not traverse sub-messages */
 				if (g_str_has_suffix (e_mail_part_get_id (mail_part), ".rfc822") &&
