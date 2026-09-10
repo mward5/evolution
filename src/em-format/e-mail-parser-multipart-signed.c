@@ -183,10 +183,26 @@ empe_mp_signed_parse (EMailParserExtension *extension,
 
 		for (link = head; link != NULL; link = g_list_next (link)) {
 			EMailPart *mail_part = link->data;
+			guint32 validity_flags;
 
-			e_mail_part_update_validity (
-				mail_part, valid,
-				validity_type | E_MAIL_PART_VALIDITY_SIGNED);
+			validity_flags = validity_type | E_MAIL_PART_VALIDITY_SIGNED;
+
+			/* The part is already both signed and encrypted, so this
+			 * multipart/signed is the outer signature of a
+			 * triple-wrapped message (RFC 2634): it covers the
+			 * ciphertext, where the signature inside the encryption
+			 * covers the plaintext. Report it as its own result --
+			 * camel_cipher_validity_envelope() has no case for that
+			 * nesting and would drop one of the two.
+			 *
+			 * Encrypted content that is not itself signed is left
+			 * alone: that pairing is one envelope() does merge, into
+			 * the single "signed and encrypted" result shown today. */
+			if (e_mail_part_get_validity (mail_part, validity_type |
+			    E_MAIL_PART_VALIDITY_SIGNED | E_MAIL_PART_VALIDITY_ENCRYPTED))
+				validity_flags |= E_MAIL_PART_VALIDITY_OUTER;
+
+			e_mail_part_update_validity (mail_part, valid, validity_flags);
 
 			/* Do not traverse sub-messages */
 			if (g_str_has_suffix (e_mail_part_get_id (mail_part), ".rfc822"))

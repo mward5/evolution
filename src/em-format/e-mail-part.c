@@ -637,9 +637,13 @@ e_mail_part_content_loaded (EMailPart *part,
 		class->content_loaded (part, web_view, iframe_id);
 }
 
+/* Returns the first pair carrying every bit of @validity_type and whose bits
+ * under @layer_mask equal @layer_value; a @layer_mask of 0 matches any layer. */
 static EMailPartValidityPair *
-mail_part_find_validity_pair (EMailPart *part,
-                              EMailPartValidityFlags validity_type)
+mail_part_find_validity_pair_full (EMailPart *part,
+                                   EMailPartValidityFlags validity_type,
+                                   EMailPartValidityFlags layer_mask,
+                                   EMailPartValidityFlags layer_value)
 {
 	GList *head, *link;
 
@@ -651,11 +655,32 @@ mail_part_find_validity_pair (EMailPart *part,
 		if (pair == NULL)
 			continue;
 
+		if ((pair->validity_type & layer_mask) != layer_value)
+			continue;
+
 		if ((pair->validity_type & validity_type) == validity_type)
 			return pair;
 	}
 
 	return NULL;
+}
+
+static EMailPartValidityPair *
+mail_part_find_validity_pair (EMailPart *part,
+                              EMailPartValidityFlags validity_type)
+{
+	return mail_part_find_validity_pair_full (part, validity_type, 0, 0);
+}
+
+/* Like mail_part_find_validity_pair(), but only considers pairs in the same
+ * layer, that is, whose E_MAIL_PART_VALIDITY_OUTER bit equals @outer. */
+static EMailPartValidityPair *
+mail_part_find_validity_pair_in_layer (EMailPart *part,
+                                       EMailPartValidityFlags validity_type,
+                                       EMailPartValidityFlags outer)
+{
+	return mail_part_find_validity_pair_full (part, validity_type,
+		E_MAIL_PART_VALIDITY_OUTER, outer);
 }
 
 /**
@@ -667,7 +692,9 @@ mail_part_find_validity_pair (EMailPart *part,
  * Updates validity of the @part. When the part already has some validity
  * set, the new @validity and @validity_type are just appended, preserving
  * the original validity. Validities of the same type (PGP or S/MIME) are
- * merged together.
+ * merged together, except that one carrying %E_MAIL_PART_VALIDITY_OUTER is
+ * kept apart from one that does not: an outer signature over encrypted
+ * content is a separate result from the signature inside it.
  */
 void
 e_mail_part_update_validity (EMailPart *part,
@@ -691,7 +718,14 @@ e_mail_part_update_validity (EMailPart *part,
 	    validity->encrypt.status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE)
 		validity_type |= E_MAIL_PART_VALIDITY_ENCRYPTED;
 
-	pair = mail_part_find_validity_pair (part, validity_type & mask);
+	/* A signature applied over already-encrypted content -- the outer
+	 * signature of an RFC 2634 triple-wrapped message -- is a separate
+	 * result from the signature found inside the encryption, so it gets its
+	 * own pair rather than being merged into the inner one:
+	 * camel_cipher_validity_envelope() has no case for that nesting and
+	 * would silently drop one of the two. */
+	pair = mail_part_find_validity_pair_in_layer (part, validity_type & mask,
+		validity_type & E_MAIL_PART_VALIDITY_OUTER);
 	if (pair != NULL) {
 		pair->validity_type |= validity_type;
 		camel_cipher_validity_envelope (pair->validity, validity);
