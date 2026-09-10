@@ -637,9 +637,13 @@ e_mail_part_content_loaded (EMailPart *part,
 		class->content_loaded (part, web_view, iframe_id);
 }
 
+/* Returns the first pair carrying every bit of @validity_type and whose bits
+ * under @layer_mask equal @layer_value; a @layer_mask of 0 matches any layer. */
 static EMailPartValidityPair *
-mail_part_find_validity_pair (EMailPart *part,
-                              EMailPartValidityFlags validity_type)
+mail_part_find_validity_pair_full (EMailPart *part,
+                                   EMailPartValidityFlags validity_type,
+                                   EMailPartValidityFlags layer_mask,
+                                   EMailPartValidityFlags layer_value)
 {
 	GList *head, *link;
 
@@ -649,6 +653,9 @@ mail_part_find_validity_pair (EMailPart *part,
 		EMailPartValidityPair *pair = link->data;
 
 		if (pair == NULL)
+			continue;
+
+		if ((pair->validity_type & layer_mask) != layer_value)
 			continue;
 
 		if ((pair->validity_type & validity_type) == validity_type)
@@ -658,32 +665,22 @@ mail_part_find_validity_pair (EMailPart *part,
 	return NULL;
 }
 
-/* Like mail_part_find_validity_pair(), but only considers pairs belonging to
- * the same layer, that is, pairs whose E_MAIL_PART_VALIDITY_OUTER bit matches
- * @outer. */
+static EMailPartValidityPair *
+mail_part_find_validity_pair (EMailPart *part,
+                              EMailPartValidityFlags validity_type)
+{
+	return mail_part_find_validity_pair_full (part, validity_type, 0, 0);
+}
+
+/* Like mail_part_find_validity_pair(), but only considers pairs in the same
+ * layer, that is, whose E_MAIL_PART_VALIDITY_OUTER bit equals @outer. */
 static EMailPartValidityPair *
 mail_part_find_validity_pair_in_layer (EMailPart *part,
                                        EMailPartValidityFlags validity_type,
                                        EMailPartValidityFlags outer)
 {
-	GList *head, *link;
-
-	head = g_queue_peek_head_link (&part->validities);
-
-	for (link = head; link != NULL; link = g_list_next (link)) {
-		EMailPartValidityPair *pair = link->data;
-
-		if (pair == NULL)
-			continue;
-
-		if ((pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != outer)
-			continue;
-
-		if ((pair->validity_type & validity_type) == validity_type)
-			return pair;
-	}
-
-	return NULL;
+	return mail_part_find_validity_pair_full (part, validity_type,
+		E_MAIL_PART_VALIDITY_OUTER, outer);
 }
 
 /**
@@ -695,7 +692,9 @@ mail_part_find_validity_pair_in_layer (EMailPart *part,
  * Updates validity of the @part. When the part already has some validity
  * set, the new @validity and @validity_type are just appended, preserving
  * the original validity. Validities of the same type (PGP or S/MIME) are
- * merged together.
+ * merged together, except that one carrying %E_MAIL_PART_VALIDITY_OUTER is
+ * kept apart from one that does not: an outer signature over encrypted
+ * content is a separate result from the signature inside it.
  */
 void
 e_mail_part_update_validity (EMailPart *part,

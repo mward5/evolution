@@ -235,7 +235,7 @@ secure_button_clicked_cb (EWebView *web_view,
 			  gpointer user_data)
 {
 	EMailPart *mail_part = user_data;
-	EMailPartValidityFlags system = 0;
+	EMailPartValidityFlags crypto_system = 0;
 	GList *link;
 	gboolean found = FALSE;
 	gchar tmp[128];
@@ -260,13 +260,13 @@ secure_button_clicked_cb (EWebView *web_view,
 	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 
-		if (!pair || !pair->validity)
+		if (!pair)
 			continue;
 
 		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "%p", pair->validity) < sizeof (tmp));
 
 		if (g_strcmp0 (element_value, tmp) == 0) {
-			system = pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME);
+			crypto_system = pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME);
 			found = TRUE;
 			break;
 		}
@@ -278,10 +278,10 @@ secure_button_clicked_cb (EWebView *web_view,
 	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 
-		if (!pair || !pair->validity)
+		if (!pair)
 			continue;
 
-		if ((pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)) != system)
+		if ((pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)) != crypto_system)
 			continue;
 
 		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "secure-button-details-%p", pair->validity) < sizeof (tmp));

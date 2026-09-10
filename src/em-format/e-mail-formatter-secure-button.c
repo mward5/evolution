@@ -363,19 +363,19 @@ secure_button_cert_info_listed (GQueue *listed,
 	return FALSE;
 }
 
-#define SECURE_BUTTON_SYSTEMS \
+#define SECURE_BUTTON_CRYPTO_SYSTEMS \
 	(E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)
 
-/* Whether @pair belongs to @system, which is the PGP bit, the S/MIME bit, or 0
+/* Whether @pair belongs to @crypto_system, which is the PGP bit, the S/MIME bit, or 0
  * for a validity that named neither. */
 static gboolean
 secure_button_pair_is_system (EMailPartValidityPair *pair,
-			      EMailPartValidityFlags system)
+			      EMailPartValidityFlags crypto_system)
 {
-	if (!pair || !pair->validity)
+	if (!pair)
 		return FALSE;
 
-	return (pair->validity_type & SECURE_BUTTON_SYSTEMS) == system;
+	return (pair->validity_type & SECURE_BUTTON_CRYPTO_SYSTEMS) == crypto_system;
 }
 
 /* The collapsed row for one crypto system, summarising that system's
@@ -387,10 +387,10 @@ secure_button_pair_is_system (EMailPartValidityPair *pair,
  * signature belongs to which layer is left to the details rows.
  *
  * Opens the table the details rows are appended to; returns FALSE, having
- * written nothing, when the part carries no validity for @system. */
+ * written nothing, when the part carries no validity for @crypto_system. */
 static gboolean
 secure_button_format_summary (EMailPart *part,
-			      EMailPartValidityFlags system,
+			      EMailPartValidityFlags crypto_system,
 			      const gchar *system_label,
 			      GString *html)
 {
@@ -411,17 +411,23 @@ secure_button_format_summary (EMailPart *part,
 		EMailPartValidityPair *pair = link->data;
 		GList *link2;
 
-		if (!secure_button_pair_is_system (pair, system))
+		if (!secure_button_pair_is_system (pair, crypto_system))
 			continue;
 
 		if (!first_validity)
 			first_validity = pair->validity;
 
 		if (secure_button_sign_severity (pair->validity->sign.status) >
-		    secure_button_sign_severity (sign_status)) {
+		    secure_button_sign_severity (sign_status))
 			sign_status = pair->validity->sign.status;
-			sender_signer_mismatch = (pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0;
-		}
+
+		/* Any layer's mismatch is reported, not only the weakest layer's.
+		 * RFC 2634 allows the outer signature to come from a different
+		 * entity than the inner one, such as a gateway, and two layers
+		 * with the same status would otherwise let whichever was found
+		 * first decide whether the mismatch is shown. */
+		if ((pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0)
+			sender_signer_mismatch = TRUE;
 
 		if (pair->validity->encrypt.status > encrypt_status) {
 			encrypt_status = pair->validity->encrypt.status;
@@ -591,7 +597,7 @@ secure_button_format_details (EMailPart *part,
  * each of that system's validities, outer signature first where there is one. */
 static void
 secure_button_format_system (EMailPart *part,
-			     EMailPartValidityFlags system,
+			     EMailPartValidityFlags crypto_system,
 			     const gchar *system_label,
 			     GString *html)
 {
@@ -604,11 +610,11 @@ secure_button_format_system (EMailPart *part,
 	for (link = head; link != NULL && !has_outer; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 
-		has_outer = secure_button_pair_is_system (pair, system) &&
+		has_outer = secure_button_pair_is_system (pair, crypto_system) &&
 			(pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
 	}
 
-	if (!secure_button_format_summary (part, system, system_label, html))
+	if (!secure_button_format_summary (part, crypto_system, system_label, html))
 		return;
 
 	/* Without an outer signature there is a single layer, so the validities
@@ -623,7 +629,7 @@ secure_button_format_system (EMailPart *part,
 			const gchar *layer_label = NULL;
 			gboolean is_outer;
 
-			if (!secure_button_pair_is_system (pair, system))
+			if (!secure_button_pair_is_system (pair, crypto_system))
 				continue;
 
 			is_outer = (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
@@ -653,10 +659,10 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
                            GCancellable *cancellable)
 {
 	/* PGP, S/MIME, and a validity naming neither. */
-	EMailPartValidityFlags systems[3];
+	EMailPartValidityFlags crypto_systems[3];
 	GList *head, *link;
 	GString *html;
-	guint n_systems = 0, ii;
+	guint n_crypto_systems = 0, ii;
 
 	if ((context->mode != E_MAIL_FORMATTER_MODE_NORMAL) &&
 	    (context->mode != E_MAIL_FORMATTER_MODE_RAW) &&
@@ -673,40 +679,40 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
 	 * signature line and let a bad signature under one system recolour the
 	 * other. Within a system the layers do get merged, which is what the
 	 * inner and outer signatures of a triple-wrapped message want. */
-	for (link = head; link != NULL && n_systems < G_N_ELEMENTS (systems); link = g_list_next (link)) {
+	for (link = head; link != NULL && n_crypto_systems < G_N_ELEMENTS (crypto_systems); link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
-		EMailPartValidityFlags system;
+		EMailPartValidityFlags crypto_system;
 		gboolean known = FALSE;
 
-		if (!pair || !pair->validity)
+		if (!pair)
 			continue;
 
-		system = pair->validity_type & SECURE_BUTTON_SYSTEMS;
+		crypto_system = pair->validity_type & SECURE_BUTTON_CRYPTO_SYSTEMS;
 
-		for (ii = 0; ii < n_systems && !known; ii++)
-			known = systems[ii] == system;
+		for (ii = 0; ii < n_crypto_systems && !known; ii++)
+			known = crypto_systems[ii] == crypto_system;
 
 		if (!known)
-			systems[n_systems++] = system;
+			crypto_systems[n_crypto_systems++] = crypto_system;
 	}
 
 	html = g_string_new ("");
 
-	for (ii = 0; ii < n_systems; ii++) {
+	for (ii = 0; ii < n_crypto_systems; ii++) {
 		const gchar *system_label = NULL;
 
 		/* Name the system only when the message carries more than one,
 		 * so an ordinary signed message reads exactly as it always has
 		 * and the name appears just where the bars would otherwise be
 		 * indistinguishable. */
-		if (n_systems > 1) {
-			if (systems[ii] == E_MAIL_PART_VALIDITY_PGP)
+		if (n_crypto_systems > 1) {
+			if (crypto_systems[ii] == E_MAIL_PART_VALIDITY_PGP)
 				system_label = _("GPG");
-			else if (systems[ii] == E_MAIL_PART_VALIDITY_SMIME)
+			else if (crypto_systems[ii] == E_MAIL_PART_VALIDITY_SMIME)
 				system_label = _("S/MIME");
 		}
 
-		secure_button_format_system (part, systems[ii], system_label, html);
+		secure_button_format_system (part, crypto_systems[ii], system_label, html);
 	}
 
 	g_output_stream_write_all (stream, html->str, html->len, NULL, cancellable, NULL);
