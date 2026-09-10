@@ -44,7 +44,7 @@
 
 Name: evolution
 Version: 3.60.2
-Release: 4.triplewrap5%{?dist}
+Release: 4.triplewrap9%{?dist}
 Summary: Mail and calendar client for GNOME
 License: GPL-2.0-or-later AND GFDL-1.3-or-later
 URL: https://gitlab.gnome.org/GNOME/evolution/-/wikis/home
@@ -601,6 +601,28 @@ grep -v "%{_datadir}/locale" evolution.lang > help.lang
 %endif
 
 %changelog
+* Thu Sep 10 2026 Mike Ward <mward5@tinfoil-fedora.com> - 3.60.2-4.triplewrap9
+- Report a sender/signer mismatch on any signature layer, not only the
+  weakest one; a mismatch on the outer signature was being dropped
+- Skip the signature part of a multipart/signed only at the position
+  reserved for it, not on content type alone at any index
+- Internal tidying from an upstream-submission review
+
+* Wed Sep 09 2026 Mike Ward <mward5@tinfoil-fedora.com> - 3.60.2-4.triplewrap8
+- Give GPG and S/MIME their own security bars again; triplewrap7 merged
+  results across crypto systems rather than within one
+- Stop the Security header claiming a message signed with both GPG and
+  S/MIME is only partially secured
+
+* Fri Sep 04 2026 Mike Ward <mward5@tinfoil-fedora.com> - 3.60.2-4.triplewrap7
+- Don't show the inner triple-wrap signature as an attachment
+- Verify and report the outer signature, which was being discarded, so a
+  bad outer signature no longer displays as a good one
+- Summarise both signature layers in one banner, with the per-layer
+  breakdown in the expanded details
+
+* Mon Aug 31 2026 Mike Ward <mward5@tinfoil-fedora.com> - 3.60.2-4.triplewrap6
+- Clear-sign the inner triple-wrap signature, not just the outer one
 * Tue Aug 25 2026 Mike Ward <mward5@tinfoil-fedora.com> - 3.60.2-4.triplewrap5
 - Fix the release artifact layout, which stopped triplewrap4 publishing
 - Keep debug symbols in a separate artifact, out of the release
