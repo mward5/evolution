@@ -1,0 +1,46 @@
+#!/usr/bin/make -f
+include /usr/share/dpkg/pkg-info.mk
+include /usr/share/gnome-pkg-tools/1/rules/gnome-version.mk
+
+export DEB_LDFLAGS_MAINT_APPEND = -Wl,-O1 -Wl,-z,defs
+# see https://bugzilla.gnome.org/show_bug.cgi?id=594473 for details
+export DEB_LDFLAGS_MAINT_STRIP = -Wl,-Bsymbolic-functions
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+DEB_REVISION := $(shell echo $(DEB_VERSION) | awk -F- '{ print $$NF }')
+
+# installed-tests are old and require python3-behave
+# which is not in Debian yet
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DSYSCONF_INSTALL_DIR=/etc \
+		-DWITH_OPENLDAP=ON \
+		-DENABLE_PLUGINS=all \
+		-DENABLE_PST_IMPORT=ON \
+		-DENABLE_AUTOAR=ON \
+		-DENABLE_INSTALLED_TESTS=OFF \
+		-DWITH_HELP=ON \
+		-DENABLE_GTK_DOC=ON \
+		-DVERSION_SUBSTRING=-$(DEB_REVISION) \
+		-DENABLE_CONTACT_MAPS=OFF \
+		$(NULL)
+
+override_dh_install:
+	mkdir -p debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig
+	mv debian/tmp/usr/lib/pkgconfig/*.pc \
+		debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig
+	dh_install
+ifneq ($(filter libevolution,$(shell dh_listpackages)),)
+	find debian/libevolution/ -name 'module-bogofilter.so' -delete
+	find debian/libevolution/ -name 'module-spamassassin.so' -delete
+endif
+
+execute_after_dh_install-arch:
+	rm debian/evolution-dev/usr/lib/evolution/libevolution-rss-common.so
+	rm debian/evolution-dev/usr/lib/evolution/libevcardeditor.so
+
+override_dh_makeshlibs:
+	dh_makeshlibs -V'libevolution (>= $(DEB_VERSION_UPSTREAM)), libevolution (<< $(DEB_GNOME_NEXTVERSION))' -n

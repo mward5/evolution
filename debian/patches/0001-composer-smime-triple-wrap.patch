@@ -1,0 +1,885 @@
+Description: RFC 2634 S/MIME triple-wrapping in the composer
+Origin: https://github.com/mward5/evolution/tree/triple-wrap
+Author: Mike C. Ward <mward5@tinfoil-fedora.com>
+Forwarded: not-yet
+Last-Update: 2026-09-10
+
+diff --git a/src/composer/e-msg-composer.c b/src/composer/e-msg-composer.c
+index 013ea6839c..212c381f83 100644
+--- a/src/composer/e-msg-composer.c
++++ b/src/composer/e-msg-composer.c
+@@ -1245,15 +1245,17 @@ composer_build_message_smime (AsyncContext *context,
+ 
+ 		cipher = camel_smime_context_new (context->session);
+ 
+-		/* if we're also encrypting, envelope-sign rather than clear-sign */
+-		if (context->smime_encrypt) {
+-			camel_smime_context_set_sign_mode (
+-				(CamelSMIMEContext *) cipher,
+-				CAMEL_SMIME_SIGN_ENVELOPED);
+-			camel_smime_context_set_encrypt_key (
+-				(CamelSMIMEContext *) cipher,
+-				TRUE, encryption_certificate);
+-		} else if (have_encryption_certificate) {
++		/* Triple-wrap (RFC 2634) needs the inner signature in the same
++		 * clear-sign (multipart/signed) form as the outer one below.
++		 * Gmail's own triple-wrapped mail uses multipart/signed
++		 * for both layers, and Thunderbird's receive-side S/MIME handling
++		 * does not recognize an opaque signed-data part nested inside a
++		 * decrypted envelope as a signature at all -- it only follows a
++		 * nested multipart/signed. camel_smime_context_new() already
++		 * defaults to CLEARSIGN, so there is nothing to set here; this
++		 * used to force CAMEL_SMIME_SIGN_ENVELOPED (opaque signed-data)
++		 * instead, from before the outer signature existed. */
++		if (context->smime_encrypt || have_encryption_certificate) {
+ 			camel_smime_context_set_encrypt_key (
+ 				(CamelSMIMEContext *) cipher,
+ 				TRUE, encryption_certificate);
+@@ -1315,6 +1317,91 @@ composer_build_message_smime (AsyncContext *context,
+ 				context->recipients->len - 1);
+ 	}
+ 
++	/* Triple-wrap (RFC 2634): when both signing and encrypting, add an outer
++	 * signature over the encrypted body, so that a gateway can verify the
++	 * message without being able to decrypt it. */
++	if (context->smime_sign && context->smime_encrypt) {
++		CamelCipherContext *cipher_outer;
++		CamelMimePart *encrypted_part;
++		CamelMimePart *outer_part;
++		CamelDataWrapper *outer_content;
++		const CamelNameValueArray *headers;
++		gboolean success;
++
++		/* RFC 2634 signs the enveloped-data body part, thus copy it out of the
++		 * message first. Signing the message itself would duplicate all of its
++		 * headers into the signed body, including the internal X-Evolution-*
++		 * ones, which are otherwise removed before the message is sent. */
++		encrypted_part = camel_mime_part_new ();
++		camel_medium_set_content (
++			CAMEL_MEDIUM (encrypted_part),
++			camel_medium_get_content (CAMEL_MEDIUM (context->message)));
++
++		headers = camel_medium_get_headers (CAMEL_MEDIUM (context->message));
++		if (headers) {
++			gint ii, length;
++			length = camel_name_value_array_get_length (headers);
++
++			for (ii = 0; ii < length; ii++) {
++				const gchar *header_name = NULL;
++				const gchar *header_value = NULL;
++
++				if (camel_name_value_array_get (headers, ii,
++					&header_name, &header_value) &&
++				    header_name &&
++				    g_ascii_strncasecmp (header_name, "Content-", 8) == 0)
++					camel_medium_set_header (
++						CAMEL_MEDIUM (encrypted_part),
++						header_name, header_value);
++			}
++		}
++
++		cipher_outer = camel_smime_context_new (context->session);
++		camel_smime_context_set_sign_mode (
++			(CamelSMIMEContext *) cipher_outer,
++			CAMEL_SMIME_SIGN_CLEARSIGN);
++
++		outer_part = camel_mime_part_new ();
++		success = camel_cipher_context_sign_sync (
++			cipher_outer, signing_certificate,
++			CAMEL_CIPHER_HASH_SHA256,
++			encrypted_part, outer_part, cancellable, error);
++
++		g_object_unref (cipher_outer);
++		g_object_unref (encrypted_part);
++
++		if (!success) {
++			g_object_unref (outer_part);
++			g_object_unref (mime_part);
++			return FALSE;
++		}
++
++		/* The Content-* headers left over from the encrypt step describe the
++		 * enveloped-data part, which is nested inside the multipart/signed now. */
++		camel_medium_remove_header (
++			CAMEL_MEDIUM (context->message), "Content-Disposition");
++		camel_medium_remove_header (
++			CAMEL_MEDIUM (context->message), "Content-Description");
++
++		/* The content is owned by outer_part, which is thus unreferenced
++		 * only after the last use of it below. */
++		outer_content = camel_medium_get_content (CAMEL_MEDIUM (outer_part));
++		camel_medium_set_content (
++			CAMEL_MEDIUM (context->message), outer_content);
++
++		/* A multipart body cannot be base64-encoded (RFC 2045, Section 6.4),
++		 * but the encrypt step left the message claiming that it is. The
++		 * header is removed rather than set to 7bit, to match the messages
++		 * which reach us through such a gateway, which carry none, and
++		 * because setting the default encoding writes an empty header. */
++		camel_data_wrapper_set_encoding (
++			outer_content, CAMEL_TRANSFER_ENCODING_DEFAULT);
++		camel_medium_remove_header (
++			CAMEL_MEDIUM (context->message), "Content-Transfer-Encoding");
++
++		g_object_unref (outer_part);
++	}
++
+ 	/* we replaced the message directly, we don't want to do reparenting foo */
+ 	if (context->smime_encrypt) {
+ 		context->skip_content = TRUE;
+diff --git a/src/em-format/e-mail-formatter-enums.h b/src/em-format/e-mail-formatter-enums.h
+index 1d3b1ceb54..9c762806d7 100644
+--- a/src/em-format/e-mail-formatter-enums.h
++++ b/src/em-format/e-mail-formatter-enums.h
+@@ -84,7 +84,8 @@ typedef enum { /*< flags >*/
+ 	E_MAIL_PART_VALIDITY_SIGNED = 1 << 2,
+ 	E_MAIL_PART_VALIDITY_ENCRYPTED = 1 << 3,
+ 	E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH = 1 << 4,
+-	E_MAIL_PART_VALIDITY_VERIFIED = 1 << 5
++	E_MAIL_PART_VALIDITY_VERIFIED = 1 << 5,
++	E_MAIL_PART_VALIDITY_OUTER = 1 << 6
+ } EMailPartValidityFlags;
+ 
+ typedef enum { /*< flags >*/
+diff --git a/src/em-format/e-mail-formatter-secure-button.c b/src/em-format/e-mail-formatter-secure-button.c
+index 7e5bc8b0e7..c872c2b4a9 100644
+--- a/src/em-format/e-mail-formatter-secure-button.c
++++ b/src/em-format/e-mail-formatter-secure-button.c
+@@ -324,62 +324,171 @@ add_details_part (GString *html,
+ 		details);
+ }
+ 
+-static void
+-secure_button_format_validity (EMailPart *part,
+-			       gboolean sender_signer_mismatch,
+-			       CamelCipherValidity *validity,
+-			       GString *html)
++/* Rank the sign statuses by how much they should worry the reader, so that a
++ * message carrying more than one signature can be summarised by its weakest
++ * one. The enum order does not express this. */
++static gint
++secure_button_sign_severity (CamelCipherValiditySign status)
++{
++	switch (status) {
++	case CAMEL_CIPHER_VALIDITY_SIGN_NONE:
++		return 0;
++	case CAMEL_CIPHER_VALIDITY_SIGN_GOOD:
++		return 1;
++	case CAMEL_CIPHER_VALIDITY_SIGN_NEED_PUBLIC_KEY:
++		return 2;
++	case CAMEL_CIPHER_VALIDITY_SIGN_UNKNOWN:
++		return 3;
++	case CAMEL_CIPHER_VALIDITY_SIGN_BAD:
++		return 4;
++	}
++
++	return 0;
++}
++
++static gboolean
++secure_button_cert_info_listed (GQueue *listed,
++				CamelCipherCertInfo *info)
++{
++	GList *link;
++
++	for (link = g_queue_peek_head_link (listed); link; link = g_list_next (link)) {
++		CamelCipherCertInfo *known = link->data;
++
++		if (g_strcmp0 (known->email, info->email) == 0 &&
++		    g_strcmp0 (known->name, info->name) == 0)
++			return TRUE;
++	}
++
++	return FALSE;
++}
++
++#define SECURE_BUTTON_CRYPTO_SYSTEMS \
++	(E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)
++
++/* Whether @pair belongs to @crypto_system, which is the PGP bit, the S/MIME bit, or 0
++ * for a validity that named neither. */
++static gboolean
++secure_button_pair_is_system (EMailPartValidityPair *pair,
++			      EMailPartValidityFlags crypto_system)
++{
++	if (!pair)
++		return FALSE;
++
++	return (pair->validity_type & SECURE_BUTTON_CRYPTO_SYSTEMS) == crypto_system;
++}
++
++/* The collapsed row for one crypto system, summarising that system's
++ * validities together: the weakest signature status picks the icon and the
++ * colour, and the signers are listed as one, so a triple-wrapped message signed
++ * by two different certificates reads as
++ * "Valid signature (mike@example.com, dlp@example.net)" and one signed twice by
++ * the same certificate reads exactly as a singly signed message does. Which
++ * signature belongs to which layer is left to the details rows.
++ *
++ * Opens the table the details rows are appended to; returns FALSE, having
++ * written nothing, when the part carries no validity for @crypto_system. */
++static gboolean
++secure_button_format_summary (EMailPart *part,
++			      EMailPartValidityFlags crypto_system,
++			      const gchar *system_label,
++			      GString *html)
+ {
++	CamelCipherValidity *first_validity = NULL;
++	CamelCipherValidityEncrypt encrypt_status = CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE;
++	CamelCipherValiditySign sign_status = CAMEL_CIPHER_VALIDITY_SIGN_NONE;
++	GQueue signers = G_QUEUE_INIT;
++	GQueue *encrypters = NULL;
++	GString *buffer;
++	GList *link;
+ 	const gchar *icon_name;
+ 	gchar *description;
++	gboolean sender_signer_mismatch = FALSE;
+ 	gint icon_width, icon_height;
+ 	gint info_index;
+-	guint length;
+-	GString *buffer;
+ 
+-	g_return_if_fail (validity != NULL);
++	for (link = g_queue_peek_head_link (&part->validities); link; link = g_list_next (link)) {
++		EMailPartValidityPair *pair = link->data;
++		GList *link2;
++
++		if (!secure_button_pair_is_system (pair, crypto_system))
++			continue;
++
++		if (!first_validity)
++			first_validity = pair->validity;
++
++		if (secure_button_sign_severity (pair->validity->sign.status) >
++		    secure_button_sign_severity (sign_status))
++			sign_status = pair->validity->sign.status;
++
++		/* Any layer's mismatch is reported, not only the weakest layer's.
++		 * RFC 2634 allows the outer signature to come from a different
++		 * entity than the inner one, such as a gateway, and two layers
++		 * with the same status would otherwise let whichever was found
++		 * first decide whether the mismatch is shown. */
++		if ((pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0)
++			sender_signer_mismatch = TRUE;
++
++		if (pair->validity->encrypt.status > encrypt_status) {
++			encrypt_status = pair->validity->encrypt.status;
++			encrypters = &pair->validity->encrypt.encrypters;
++		}
++
++		for (link2 = g_queue_peek_head_link (&pair->validity->sign.signers); link2; link2 = g_list_next (link2)) {
++			CamelCipherCertInfo *info = link2->data;
++
++			if (!secure_button_cert_info_listed (&signers, info))
++				g_queue_push_tail (&signers, info);
++		}
++	}
++
++	if (!first_validity)
++		return FALSE;
+ 
+ 	buffer = g_string_new ("");
+ 
+-	if (validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE) {
++	if (sign_status != CAMEL_CIPHER_VALIDITY_SIGN_NONE) {
+ 		const gchar *desc = NULL;
+-		gint status;
+-
+-		status = validity->sign.status;
+ 
+-		format_cert_infos (&validity->sign.signers, buffer);
++		format_cert_infos (&signers, buffer);
+ 
+ 		if (sender_signer_mismatch)
+-			desc = smime_sign_table[status].shortdesc_mismatch;
++			desc = smime_sign_table[sign_status].shortdesc_mismatch;
+ 		if (!desc)
+-			desc = smime_sign_table[status].shortdesc;
++			desc = smime_sign_table[sign_status].shortdesc;
+ 
+ 		g_string_prepend (buffer, gettext (desc));
+ 	}
+ 
+-	if (validity->encrypt.status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE) {
+-		const gchar *desc;
+-		gint status;
+-
+-		if (validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE)
++	if (encrypt_status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE) {
++		if (sign_status != CAMEL_CIPHER_VALIDITY_SIGN_NONE)
+ 			g_string_append (buffer, "<br>\n");
+ 
+-		status = validity->encrypt.status;
+-		desc = smime_encrypt_table[status].shortdesc;
+-		g_string_append (buffer, gettext (desc));
++		g_string_append (buffer, gettext (smime_encrypt_table[encrypt_status].shortdesc));
++	}
++
++	if (system_label && *system_label) {
++		gchar *escaped, *markup;
++
++		escaped = g_markup_escape_text (system_label, -1);
++		markup = g_strdup_printf ("<b>%s</b>&nbsp;&mdash; ", escaped);
++		g_string_prepend (buffer, markup);
++
++		g_free (markup);
++		g_free (escaped);
+ 	}
+ 
+ 	description = g_string_free (buffer, FALSE);
+ 
+-	info_index = validity->sign.status;
++	info_index = sign_status;
+ 	if (sender_signer_mismatch && info_index == CAMEL_CIPHER_VALIDITY_SIGN_GOOD)
+ 		info_index = CAMEL_CIPHER_VALIDITY_SIGN_UNKNOWN;
+ 
+ 	/* FIXME: need to have it based on encryption and signing too */
+-	if (validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE)
++	if (sign_status != CAMEL_CIPHER_VALIDITY_SIGN_NONE)
+ 		icon_name = smime_sign_table[info_index].icon;
+ 	else
+-		icon_name = smime_encrypt_table[validity->encrypt.status].icon;
++		icon_name = smime_encrypt_table[encrypt_status].icon;
+ 
+ 	if (!gtk_icon_size_lookup (GTK_ICON_SIZE_LARGE_TOOLBAR, &icon_width, &icon_height)) {
+ 		icon_width = 24;
+@@ -387,7 +496,7 @@ secure_button_format_validity (EMailPart *part,
+ 	}
+ 
+ 	g_string_append (html, "<table width=\"100%\" style=\"margin-bottom:4px; vertical-align:middle;");
+-	if (validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE &&
++	if (sign_status != CAMEL_CIPHER_VALIDITY_SIGN_NONE &&
+ 	    smime_sign_colour[info_index].alpha > 1e-9) {
+ 		g_string_append_printf (html, " background:#%06x; color:#%06x;",
+ 			e_rgba_to_value (&smime_sign_colour[info_index]),
+@@ -398,51 +507,147 @@ secure_button_format_validity (EMailPart *part,
+ 	g_string_append_printf (html,
+ 		"<td style=\"width:1px;\"><button type=\"button\" class=\"secure-button\" id=\"secure-button\" value=\"%p:%p\" accesskey=\"\" style=\"vertical-align:middle;\">"
+ 		"<img src=\"gtk-stock://%s?size=%d\" width=\"%dpx\" height=\"%dpx\" style=\"vertical-align:middle;\"></button></td><td><span style=\"vertical-align:middle;\">",
+-		part, validity, icon_name, GTK_ICON_SIZE_LARGE_TOOLBAR,
++		part, first_validity, icon_name, GTK_ICON_SIZE_LARGE_TOOLBAR,
+ 		icon_width, icon_height);
+ 
+-	g_queue_foreach (&validity->sign.signers, add_photo_cb, html);
+-	g_queue_foreach (&validity->encrypt.encrypters, add_photo_cb, html);
++	g_queue_foreach (&signers, add_photo_cb, html);
++	if (encrypters)
++		g_queue_foreach (encrypters, add_photo_cb, html);
+ 
+ 	g_string_append_printf (html, "%s</span></td></tr>", description);
+ 
++	g_queue_clear (&signers);
++	g_free (description);
++
++	return TRUE;
++}
++
++/* One hidden row per validity, revealed by the button in the collapsed row.
++ * @layer_label names the layer when the message has more than one. */
++static void
++secure_button_format_details (EMailPart *part,
++			      CamelCipherValidity *validity,
++			      const gchar *layer_label,
++			      GString *html)
++{
++	gboolean per_layer = layer_label && *layer_label;
++	gboolean wrote_any = FALSE;
++	guint length;
++
++	g_return_if_fail (validity != NULL);
++
+ 	e_util_markup_append_escaped (html,
+-		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>"
+-		"<b>%s</b><br>"
+-		"%s<br>",
+-		validity,
+-		_("Digital Signature"),
+-		secure_button_get_sign_description (validity->sign.status));
+-
+-	length = g_queue_get_length (&validity->sign.signers);
+-	if (length) {
+-		add_cert_table (html,
+-			g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length),
+-			&validity->sign.signers,
+-			length, part, validity);
++		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>",
++		validity);
++
++	if (per_layer)
++		e_util_markup_append_escaped (html, "<b>%s</b><br><br>", layer_label);
++
++	/* A single layer reports both headings even when one of them has
++	 * nothing to say, because "this message is not encrypted" is a warning
++	 * worth making in its own right. Per layer it is not: each layer of a
++	 * triple-wrapped message carries one of the two, so noting that the
++	 * outer signature applies no encryption is accurate but of no interest,
++	 * an outer signature never does -- while still being worded as a
++	 * warning, on a message that is encrypted. Report what the layer has. */
++	if (!per_layer || validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE) {
++		e_util_markup_append_escaped (html,
++			"<b>%s</b><br>"
++			"%s<br>",
++			_("Digital Signature"),
++			secure_button_get_sign_description (validity->sign.status));
++
++		length = g_queue_get_length (&validity->sign.signers);
++		if (length) {
++			add_cert_table (html,
++				g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length),
++				&validity->sign.signers,
++				length, part, validity);
++		}
++
++		add_details_part (html, part, validity, validity->sign.description, "sign");
++
++		wrote_any = TRUE;
+ 	}
+ 
+-	add_details_part (html, part, validity, validity->sign.description, "sign");
++	if (!per_layer || validity->encrypt.status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE) {
++		if (wrote_any)
++			g_string_append (html, "<br>");
+ 
+-	e_util_markup_append_escaped (html,
+-		"<br>"
+-		"<b>%s</b><br>"
+-		"%s<br>",
+-		_("Encryption"),
+-		secure_button_get_encrypt_description (validity->encrypt.status));
+-
+-	length = g_queue_get_length (&validity->encrypt.encrypters);
+-	if (length) {
+-		add_cert_table (html, _("Encrypted by:"),
+-			&validity->encrypt.encrypters,
+-			length, part, validity);
++		e_util_markup_append_escaped (html,
++			"<b>%s</b><br>"
++			"%s<br>",
++			_("Encryption"),
++			secure_button_get_encrypt_description (validity->encrypt.status));
++
++		length = g_queue_get_length (&validity->encrypt.encrypters);
++		if (length) {
++			add_cert_table (html, _("Encrypted by:"),
++				&validity->encrypt.encrypters,
++				length, part, validity);
++		}
++
++		add_details_part (html, part, validity, validity->encrypt.description, "encr");
+ 	}
+ 
+-	add_details_part (html, part, validity, validity->encrypt.description, "encr");
++	g_string_append (html, "</small></td></tr>\n");
++}
+ 
+-	g_string_append (html, "</small></td></tr></table>\n");
++/* One bar for one crypto system: the collapsed summary, then a details row for
++ * each of that system's validities, outer signature first where there is one. */
++static void
++secure_button_format_system (EMailPart *part,
++			     EMailPartValidityFlags crypto_system,
++			     const gchar *system_label,
++			     GString *html)
++{
++	GList *head, *link;
++	gboolean has_outer = FALSE;
++	gint pass;
+ 
+-	g_free (description);
++	head = g_queue_peek_head_link (&part->validities);
++
++	for (link = head; link != NULL && !has_outer; link = g_list_next (link)) {
++		EMailPartValidityPair *pair = link->data;
++
++		has_outer = secure_button_pair_is_system (pair, crypto_system) &&
++			(pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
++	}
++
++	if (!secure_button_format_summary (part, crypto_system, system_label, html))
++		return;
++
++	/* Without an outer signature there is a single layer, so the validities
++	 * are shown in the order they were found and are not labelled. With one
++	 * -- an RFC 2634 triple-wrapped message -- show the outer signature
++	 * first: it is what covers the message as it travelled, so it is the
++	 * one that fails if the message was tampered with, and burying it under
++	 * the inner signature's result would hide that. */
++	for (pass = 0; pass <= (has_outer ? 1 : 0); pass++) {
++		for (link = head; link != NULL; link = g_list_next (link)) {
++			EMailPartValidityPair *pair = link->data;
++			const gchar *layer_label = NULL;
++			gboolean is_outer;
++
++			if (!secure_button_pair_is_system (pair, crypto_system))
++				continue;
++
++			is_outer = (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
++
++			if (has_outer) {
++				if (is_outer != (pass == 0))
++					continue;
++
++				layer_label = is_outer ?
++					_("Outer signature (over the encrypted message)") :
++					_("Inner signature (over the message content)");
++			}
++
++			secure_button_format_details (part, pair->validity, layer_label, html);
++		}
++	}
++
++	g_string_append (html, "</table>\n");
+ }
+ 
+ static gboolean
+@@ -453,26 +658,61 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
+                            GOutputStream *stream,
+                            GCancellable *cancellable)
+ {
++	/* PGP, S/MIME, and a validity naming neither. */
++	EMailPartValidityFlags crypto_systems[3];
+ 	GList *head, *link;
+ 	GString *html;
++	guint n_crypto_systems = 0, ii;
+ 
+ 	if ((context->mode != E_MAIL_FORMATTER_MODE_NORMAL) &&
+ 	    (context->mode != E_MAIL_FORMATTER_MODE_RAW) &&
+ 	    (context->mode != E_MAIL_FORMATTER_MODE_ALL_HEADERS))
+ 		return FALSE;
+ 
+-	html = g_string_new ("");
+ 	head = g_queue_peek_head_link (&part->validities);
+ 
+-	for (link = head; link != NULL; link = g_list_next (link)) {
++	/* One bar per crypto system, in the order each first appears -- for a
++	 * message signed with both, the order the layers were applied.
++	 *
++	 * PGP and S/MIME are independent results about the same message, and
++	 * summarising them together would put a GPG signer on the S/MIME
++	 * signature line and let a bad signature under one system recolour the
++	 * other. Within a system the layers do get merged, which is what the
++	 * inner and outer signatures of a triple-wrapped message want. */
++	for (link = head; link != NULL && n_crypto_systems < G_N_ELEMENTS (crypto_systems); link = g_list_next (link)) {
+ 		EMailPartValidityPair *pair = link->data;
+-		gboolean sender_signer_mismatch;
++		EMailPartValidityFlags crypto_system;
++		gboolean known = FALSE;
+ 
+ 		if (!pair)
+ 			continue;
+ 
+-		sender_signer_mismatch = (pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0;
+-		secure_button_format_validity (part, sender_signer_mismatch, pair->validity, html);
++		crypto_system = pair->validity_type & SECURE_BUTTON_CRYPTO_SYSTEMS;
++
++		for (ii = 0; ii < n_crypto_systems && !known; ii++)
++			known = crypto_systems[ii] == crypto_system;
++
++		if (!known)
++			crypto_systems[n_crypto_systems++] = crypto_system;
++	}
++
++	html = g_string_new ("");
++
++	for (ii = 0; ii < n_crypto_systems; ii++) {
++		const gchar *system_label = NULL;
++
++		/* Name the system only when the message carries more than one,
++		 * so an ordinary signed message reads exactly as it always has
++		 * and the name appears just where the bars would otherwise be
++		 * indistinguishable. */
++		if (n_crypto_systems > 1) {
++			if (crypto_systems[ii] == E_MAIL_PART_VALIDITY_PGP)
++				system_label = _("GPG");
++			else if (crypto_systems[ii] == E_MAIL_PART_VALIDITY_SMIME)
++				system_label = _("S/MIME");
++		}
++
++		secure_button_format_system (part, crypto_systems[ii], system_label, html);
+ 	}
+ 
+ 	g_output_stream_write_all (stream, html->str, html->len, NULL, cancellable, NULL);
+diff --git a/src/em-format/e-mail-formatter-utils.c b/src/em-format/e-mail-formatter-utils.c
+index 6388a9a8ec..d15d4eb997 100644
+--- a/src/em-format/e-mail-formatter-utils.c
++++ b/src/em-format/e-mail-formatter-utils.c
+@@ -592,6 +592,7 @@ e_mail_formatter_format_security_header (EMailFormatter *formatter,
+ 	GQueue queue = G_QUEUE_INIT;
+ 	GList *head, *link;
+ 	guint32 check_valid_flags = 0;
++	gboolean present[G_N_ELEMENTS (validity_flags)] = { FALSE, };
+ 	gint part_id_prefix_len;
+ 	gboolean is_partial = FALSE;
+ 	guint ii;
+@@ -633,8 +634,10 @@ e_mail_formatter_format_security_header (EMailFormatter *formatter,
+ 			} else {
+ 				guint32 validies = 0;
+ 				for (ii = 0; ii < G_N_ELEMENTS (validity_flags); ii++) {
+-					if (e_mail_part_get_validity (mail_part, validity_flags[ii].flags))
++					if (e_mail_part_get_validity (mail_part, validity_flags[ii].flags)) {
+ 						validies |= validity_flags[ii].flags;
++						present[ii] = TRUE;
++					}
+ 				}
+ 				check_valid_flags |= validies;
+ 			}
+@@ -666,7 +669,27 @@ e_mail_formatter_format_security_header (EMailFormatter *formatter,
+ 					break;
+ 				}
+ 
+-				is_partial = !e_mail_part_get_validity (mail_part, check_valid_flags);
++				/* Check each entry on its own rather than asking a
++				 * single validity pair to satisfy check_valid_flags as
++				 * a whole. A pair only ever describes one crypto
++				 * system -- e_mail_part_update_validity() keeps PGP and
++				 * S/MIME in separate pairs by design -- so the combined
++				 * lookup can never succeed on a message carrying both,
++				 * and every such message read as partially secured
++				 * however completely it was covered.
++				 *
++				 * The merged mask cannot be tested entry-wise either:
++				 * with PGP-signed and S/MIME-encrypted present it
++				 * contains the bits of "S/MIME signed" without any part
++				 * being S/MIME signed. Which entries genuinely appear
++				 * is recorded separately, above. */
++				for (ii = 0; ii < G_N_ELEMENTS (validity_flags); ii++) {
++					if (present[ii] &&
++					    !e_mail_part_get_validity (mail_part, validity_flags[ii].flags)) {
++						is_partial = TRUE;
++						break;
++					}
++				}
+ 
+ 				/* Do not traverse sub-messages */
+ 				if (g_str_has_suffix (e_mail_part_get_id (mail_part), ".rfc822") &&
+diff --git a/src/em-format/e-mail-parser-multipart-signed.c b/src/em-format/e-mail-parser-multipart-signed.c
+index 8f11a2ed42..a533a6b8ec 100644
+--- a/src/em-format/e-mail-parser-multipart-signed.c
++++ b/src/em-format/e-mail-parser-multipart-signed.c
+@@ -41,6 +41,20 @@ static const gchar *parser_mime_types[] = {
+ 	NULL
+ };
+ 
++static gboolean
++empe_mp_signed_is_signature_type (CamelContentType *content_type)
++{
++	if (!content_type)
++		return FALSE;
++
++	/* The same spellings the protocol dispatch below accepts. */
++	return camel_content_type_is (content_type, "application", "pkcs7-signature") ||
++		camel_content_type_is (content_type, "application", "xpkcs7signature") ||
++		camel_content_type_is (content_type, "application", "xpkcs7-signature") ||
++		camel_content_type_is (content_type, "application", "x-pkcs7-signature") ||
++		camel_content_type_is (content_type, "application", "pgp-signature");
++}
++
+ static gboolean
+ empe_mp_signed_parse (EMailParserExtension *extension,
+                       EMailParser *parser,
+@@ -182,6 +196,24 @@ empe_mp_signed_parse (EMailParserExtension *extension,
+ 
+ 		subpart = camel_multipart_get_part (multipart, i);
+ 
++		/* The signature part proves the content, it is not content
++		 * itself, so there is nothing to show for it. Skip it here,
++		 * rather than dispatching it and leaving its handler to work
++		 * out that the parent is this multipart/signed: that lookup
++		 * walks the message tree, which does not reach a
++		 * multipart/signed recovered from a decrypted part (the inner
++		 * layer of a triple-wrapped message lives in the decrypted
++		 * copy, not in the message), so the signature ended up being
++		 * shown as an attachment.
++		 *
++		 * Require both the position CamelMultipartSigned reserves for
++		 * the signature and a signature type, so that only that part
++		 * is skipped and a multipart the parser could not lay out is
++		 * left to the handlers as before. */
++		if (i == CAMEL_MULTIPART_SIGNED_SIGNATURE &&
++		    empe_mp_signed_is_signature_type (camel_mime_part_get_content_type (subpart)))
++			continue;
++
+ 		g_string_append_printf (part_id, ".signed.%d", i);
+ 
+ 		g_warn_if_fail (e_mail_parser_parse_part (
+@@ -196,10 +228,26 @@ empe_mp_signed_parse (EMailParserExtension *extension,
+ 
+ 		for (link = head; link != NULL; link = g_list_next (link)) {
+ 			EMailPart *mail_part = link->data;
+-
+-			e_mail_part_update_validity (
+-				mail_part, valid,
+-				validity_type | E_MAIL_PART_VALIDITY_SIGNED);
++			guint32 validity_flags;
++
++			validity_flags = validity_type | E_MAIL_PART_VALIDITY_SIGNED;
++
++			/* The part is already both signed and encrypted, so this
++			 * multipart/signed is the outer signature of a
++			 * triple-wrapped message (RFC 2634): it covers the
++			 * ciphertext, where the signature inside the encryption
++			 * covers the plaintext. Report it as its own result --
++			 * camel_cipher_validity_envelope() has no case for that
++			 * nesting and would drop one of the two.
++			 *
++			 * Encrypted content that is not itself signed is left
++			 * alone: that pairing is one envelope() does merge, into
++			 * the single "signed and encrypted" result shown today. */
++			if (e_mail_part_get_validity (mail_part, validity_type |
++			    E_MAIL_PART_VALIDITY_SIGNED | E_MAIL_PART_VALIDITY_ENCRYPTED))
++				validity_flags |= E_MAIL_PART_VALIDITY_OUTER;
++
++			e_mail_part_update_validity (mail_part, valid, validity_flags);
+ 
+ 			/* Do not traverse sub-messages */
+ 			if (g_str_has_suffix (e_mail_part_get_id (mail_part), ".rfc822"))
+diff --git a/src/em-format/e-mail-part-secure-button.c b/src/em-format/e-mail-part-secure-button.c
+index cdce11e37d..b6a765485c 100644
+--- a/src/em-format/e-mail-part-secure-button.c
++++ b/src/em-format/e-mail-part-secure-button.c
+@@ -235,7 +235,9 @@ secure_button_clicked_cb (EWebView *web_view,
+ 			  gpointer user_data)
+ {
+ 	EMailPart *mail_part = user_data;
++	EMailPartValidityFlags crypto_system = 0;
+ 	GList *link;
++	gboolean found = FALSE;
+ 	gchar tmp[128];
+ 
+ 	g_return_if_fail (E_IS_MAIL_PART_SECURE_BUTTON (mail_part));
+@@ -250,6 +252,11 @@ secure_button_clicked_cb (EWebView *web_view,
+ 
+ 	element_value += strlen (tmp);
+ 
++	/* There is one button per crypto system, and one details row per
++	 * validity within it -- a triple-wrapped message has one for each
++	 * signature layer -- so the button toggles its own system's rows and
++	 * leaves any other system's bar alone. The button carries the first
++	 * validity of its system, which is what identifies the group here. */
+ 	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
+ 		EMailPartValidityPair *pair = link->data;
+ 
+@@ -259,17 +266,33 @@ secure_button_clicked_cb (EWebView *web_view,
+ 		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "%p", pair->validity) < sizeof (tmp));
+ 
+ 		if (g_strcmp0 (element_value, tmp) == 0) {
+-			g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "secure-button-details-%p", pair->validity) < sizeof (tmp));
+-
+-			e_web_view_jsc_run_script (WEBKIT_WEB_VIEW (web_view), e_web_view_get_cancellable (web_view),
+-				"var elem = Evo.FindElement(%s, %s);\n"
+-				"if (elem) {\n"
+-				"	elem.hidden = !elem.hidden;\n"
+-				"}\n",
+-				iframe_id, tmp);
++			crypto_system = pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME);
++			found = TRUE;
+ 			break;
+ 		}
+ 	}
++
++	if (!found)
++		return;
++
++	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
++		EMailPartValidityPair *pair = link->data;
++
++		if (!pair)
++			continue;
++
++		if ((pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)) != crypto_system)
++			continue;
++
++		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "secure-button-details-%p", pair->validity) < sizeof (tmp));
++
++		e_web_view_jsc_run_script (WEBKIT_WEB_VIEW (web_view), e_web_view_get_cancellable (web_view),
++			"var elem = Evo.FindElement(%s, %s);\n"
++			"if (elem) {\n"
++			"	elem.hidden = !elem.hidden;\n"
++			"}\n",
++			iframe_id, tmp);
++	}
+ }
+ 
+ static void
+diff --git a/src/em-format/e-mail-part.c b/src/em-format/e-mail-part.c
+index 7ec19c57c4..5c10154d31 100644
+--- a/src/em-format/e-mail-part.c
++++ b/src/em-format/e-mail-part.c
+@@ -637,9 +637,13 @@ e_mail_part_content_loaded (EMailPart *part,
+ 		class->content_loaded (part, web_view, iframe_id);
+ }
+ 
++/* Returns the first pair carrying every bit of @validity_type and whose bits
++ * under @layer_mask equal @layer_value; a @layer_mask of 0 matches any layer. */
+ static EMailPartValidityPair *
+-mail_part_find_validity_pair (EMailPart *part,
+-                              EMailPartValidityFlags validity_type)
++mail_part_find_validity_pair_full (EMailPart *part,
++                                   EMailPartValidityFlags validity_type,
++                                   EMailPartValidityFlags layer_mask,
++                                   EMailPartValidityFlags layer_value)
+ {
+ 	GList *head, *link;
+ 
+@@ -651,6 +655,9 @@ mail_part_find_validity_pair (EMailPart *part,
+ 		if (pair == NULL)
+ 			continue;
+ 
++		if ((pair->validity_type & layer_mask) != layer_value)
++			continue;
++
+ 		if ((pair->validity_type & validity_type) == validity_type)
+ 			return pair;
+ 	}
+@@ -658,6 +665,24 @@ mail_part_find_validity_pair (EMailPart *part,
+ 	return NULL;
+ }
+ 
++static EMailPartValidityPair *
++mail_part_find_validity_pair (EMailPart *part,
++                              EMailPartValidityFlags validity_type)
++{
++	return mail_part_find_validity_pair_full (part, validity_type, 0, 0);
++}
++
++/* Like mail_part_find_validity_pair(), but only considers pairs in the same
++ * layer, that is, whose E_MAIL_PART_VALIDITY_OUTER bit equals @outer. */
++static EMailPartValidityPair *
++mail_part_find_validity_pair_in_layer (EMailPart *part,
++                                       EMailPartValidityFlags validity_type,
++                                       EMailPartValidityFlags outer)
++{
++	return mail_part_find_validity_pair_full (part, validity_type,
++		E_MAIL_PART_VALIDITY_OUTER, outer);
++}
++
+ /**
+  * e_mail_part_update_validity:
+  * @part: An #EMailPart
+@@ -667,7 +692,9 @@ mail_part_find_validity_pair (EMailPart *part,
+  * Updates validity of the @part. When the part already has some validity
+  * set, the new @validity and @validity_type are just appended, preserving
+  * the original validity. Validities of the same type (PGP or S/MIME) are
+- * merged together.
++ * merged together, except that one carrying %E_MAIL_PART_VALIDITY_OUTER is
++ * kept apart from one that does not: an outer signature over encrypted
++ * content is a separate result from the signature inside it.
+  */
+ void
+ e_mail_part_update_validity (EMailPart *part,
+@@ -691,7 +718,14 @@ e_mail_part_update_validity (EMailPart *part,
+ 	    validity->encrypt.status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE)
+ 		validity_type |= E_MAIL_PART_VALIDITY_ENCRYPTED;
+ 
+-	pair = mail_part_find_validity_pair (part, validity_type & mask);
++	/* A signature applied over already-encrypted content -- the outer
++	 * signature of an RFC 2634 triple-wrapped message -- is a separate
++	 * result from the signature found inside the encryption, so it gets its
++	 * own pair rather than being merged into the inner one:
++	 * camel_cipher_validity_envelope() has no case for that nesting and
++	 * would silently drop one of the two. */
++	pair = mail_part_find_validity_pair_in_layer (part, validity_type & mask,
++		validity_type & E_MAIL_PART_VALIDITY_OUTER);
+ 	if (pair != NULL) {
+ 		pair->validity_type |= validity_type;
+ 		camel_cipher_validity_envelope (pair->validity, validity);
