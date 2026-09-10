@@ -1,3 +1,75 @@
+evolution (3.60.2-4+triplewrap9) resolute; urgency=medium
+
+  * Report a sender/signer mismatch on any signature layer, not only the
+    weakest one. Two layers that were both valid tied on severity, so a
+    mismatch on the outer signature was dropped and the banner stayed
+    green. RFC 2634 allows the outer signature to come from a different
+    entity than the inner one, such as a gateway, so a differing outer
+    signer is expected rather than exceptional.
+  * Skip the signature part of a multipart/signed only at the position
+    reserved for it, rather than on content type alone at any index. Same
+    result for every message the parser can lay out; one it cannot is
+    left to the handlers as before.
+  * Internal tidying from an upstream-submission review: a local no
+    longer shadows the C library's system(3), one validity lookup
+    replaces two near-identical ones, and guards were dropped for a state
+    the code cannot produce.
+
+ -- Mike Ward <mward5@tinfoil-fedora.com>  Thu, 10 Sep 2026 15:31:52 -0700
+
+evolution (3.60.2-4+triplewrap8) resolute; urgency=medium
+
+  * Give GPG and S/MIME their own security bars again. triplewrap7
+    summarised the inner and outer S/MIME signatures into one bar, which
+    was right, but it did so across every result rather than within a
+    crypto system, so a message signed with both GPG and S/MIME ended up
+    with a single bar mixing the two -- listing the GPG signer on the
+    S/MIME signature line, and letting a bad signature under one system
+    recolour the other. Each system now gets its own bar, named when a
+    message carries more than one, with the inner and outer S/MIME
+    signatures still merged inside the S/MIME one.
+  * The Security header no longer claims a message is only partially
+    secured when it is signed with both GPG and S/MIME. It collected the
+    flags found anywhere in the message into one bitmask and then asked
+    whether a single result contained all of them; results describe one
+    crypto system each, so that could never succeed once both were
+    present, however completely the message was covered. Each is now
+    judged separately.
+
+ -- Mike Ward <mward5@tinfoil-fedora.com>  Wed, 09 Sep 2026 11:25:34 -0700
+
+evolution (3.60.2-4+triplewrap7) resolute; urgency=medium
+
+  * Don't show the inner triple-wrap signature as an attachment. Since
+    triplewrap6 made the inner layer clear-signed, its smime.p7s appeared
+    as a visible "S/MIME Cryptographic Signature" attachment. The check
+    that hides a signature part looks for the part's parent in the
+    message, and the inner multipart/signed lives in the decrypted copy
+    rather than in the message, so the check never found it. PGP mail
+    that is encrypted and then signed was affected the same way.
+  * Report the outer signature. It was already being verified and the
+    answer then thrown away: a signature over content that is both signed
+    and encrypted fits neither case the validity-merging code handles, so
+    a bad outer signature displayed as green as a good one. It now
+    carries a result of its own.
+  * The security banner still shows a single line, summarising both
+    layers -- the weaker signature status picks the colour, and signers
+    are listed together when the two layers differ. Which signature
+    belongs to which layer is in the expanded details, outer first.
+
+ -- Mike Ward <mward5@tinfoil-fedora.com>  Fri, 04 Sep 2026 14:07:33 -0700
+
+evolution (3.60.2-4+triplewrap6) resolute; urgency=medium
+
+  * Clear-sign the inner triple-wrap signature, not just the outer one.
+    The inner layer was opaque signed-data, left over from before the
+    outer signature existed; some S/MIME verifiers (Thunderbird's, in
+    testing) don't recognize a signature nested that way inside a
+    decrypted envelope, and silently show the whole message as
+    unsigned. Both layers now use multipart/signed.
+
+ -- Mike Ward <mward5@tinfoil-fedora.com>  Mon, 31 Aug 2026 11:50:02 -0700
+
 evolution (3.60.2-4+triplewrap5) resolute; urgency=medium
 
   * Fix the release artifact layout, which stopped v3.60.2-triplewrap4
