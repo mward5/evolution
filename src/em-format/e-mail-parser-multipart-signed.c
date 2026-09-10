@@ -204,8 +204,14 @@ empe_mp_signed_parse (EMailParserExtension *extension,
 		 * multipart/signed recovered from a decrypted part (the inner
 		 * layer of a triple-wrapped message lives in the decrypted
 		 * copy, not in the message), so the signature ended up being
-		 * shown as an attachment. */
-		if (empe_mp_signed_is_signature_type (camel_mime_part_get_content_type (subpart)))
+		 * shown as an attachment.
+		 *
+		 * Require both the position CamelMultipartSigned reserves for
+		 * the signature and a signature type, so that only that part
+		 * is skipped and a multipart the parser could not lay out is
+		 * left to the handlers as before. */
+		if (i == CAMEL_MULTIPART_SIGNED_SIGNATURE &&
+		    empe_mp_signed_is_signature_type (camel_mime_part_get_content_type (subpart)))
 			continue;
 
 		g_string_append_printf (part_id, ".signed.%d", i);
