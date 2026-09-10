@@ -1247,7 +1247,7 @@ composer_build_message_smime (AsyncContext *context,
 
 		/* Triple-wrap (RFC 2634) needs the inner signature in the same
 		 * clear-sign (multipart/signed) form as the outer one below.
-		 * Broadcom/Gmail's own triple-wrapped mail uses multipart/signed
+		 * Gmail's own triple-wrapped mail uses multipart/signed
 		 * for both layers, and Thunderbird's receive-side S/MIME handling
 		 * does not recognize an opaque signed-data part nested inside a
 		 * decrypted envelope as a signature at all -- it only follows a
