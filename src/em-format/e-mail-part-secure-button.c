@@ -224,7 +224,9 @@ secure_button_clicked_cb (EWebView *web_view,
 			  gpointer user_data)
 {
 	EMailPart *mail_part = user_data;
+	EMailPartValidityFlags crypto_system = 0;
 	GList *link;
+	gboolean found = FALSE;
 	gchar tmp[128];
 
 	g_return_if_fail (E_IS_MAIL_PART_SECURE_BUTTON (mail_part));
@@ -239,6 +241,11 @@ secure_button_clicked_cb (EWebView *web_view,
 
 	element_value += strlen (tmp);
 
+	/* There is one button per crypto system, and one details row per
+	 * validity within it -- a triple-wrapped message has one for each
+	 * signature layer -- so the button toggles its own system's rows and
+	 * leaves any other system's bar alone. The button carries the first
+	 * validity of its system, which is what identifies the group here. */
 	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 
@@ -248,16 +255,32 @@ secure_button_clicked_cb (EWebView *web_view,
 		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "%p", pair->validity) < sizeof (tmp));
 
 		if (g_strcmp0 (element_value, tmp) == 0) {
-			g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "secure-button-details-%p", pair->validity) < sizeof (tmp));
-
-			e_web_view_jsc_run_script (WEBKIT_WEB_VIEW (web_view), e_web_view_get_cancellable (web_view),
-				"var elem = Evo.FindElement(%s, %s);\n"
-				"if (elem) {\n"
-				"	elem.hidden = !elem.hidden;\n"
-				"}\n",
-				iframe_id, tmp);
+			crypto_system = pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME);
+			found = TRUE;
 			break;
 		}
+	}
+
+	if (!found)
+		return;
+
+	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
+		EMailPartValidityPair *pair = link->data;
+
+		if (!pair)
+			continue;
+
+		if ((pair->validity_type & (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)) != crypto_system)
+			continue;
+
+		g_return_if_fail (g_snprintf (tmp, sizeof (tmp), "secure-button-details-%p", pair->validity) < sizeof (tmp));
+
+		e_web_view_jsc_run_script (WEBKIT_WEB_VIEW (web_view), e_web_view_get_cancellable (web_view),
+			"var elem = Evo.FindElement(%s, %s);\n"
+			"if (elem) {\n"
+			"	elem.hidden = !elem.hidden;\n"
+			"}\n",
+			iframe_id, tmp);
 	}
 }
 
