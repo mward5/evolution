@@ -522,128 +522,171 @@ secure_button_format_summary (EMailPart *part,
 	return TRUE;
 }
 
-/* One hidden row per validity, revealed by the button in the collapsed row.
- * @layer_label names the layer when the message has more than one. */
+static void
+secure_button_format_encryption (EMailPart *part,
+				 CamelCipherValidity *validity,
+				 GString *html)
+{
+	guint length;
+
+	e_util_markup_append_escaped (html, "<b>%s</b><br>%s<br>", _("Encryption"), secure_button_get_encrypt_description (validity->encrypt.status));
+
+	length = g_queue_get_length (&validity->encrypt.encrypters);
+	if (length)
+		add_cert_table (html, _("Encrypted by:"), &validity->encrypt.encrypters, length, part, validity);
+
+	add_details_part (html, part, validity, validity->encrypt.description, "encr");
+}
+
 static void
 secure_button_format_details (EMailPart *part,
 			      CamelCipherValidity *validity,
-			      const gchar *layer_label,
 			      GString *html)
 {
-	gboolean per_layer = layer_label && *layer_label;
-	gboolean wrote_any = FALSE;
 	guint length;
 
 	g_return_if_fail (validity != NULL);
 
 	e_util_markup_append_escaped (html,
-		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>",
-		validity);
+		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>"
+		"<b>%s</b><br>%s<br>",
+		validity, _("Digital Signature"), secure_button_get_sign_description (validity->sign.status));
 
-	if (per_layer)
-		e_util_markup_append_escaped (html, "<b>%s</b><br><br>", layer_label);
+	length = g_queue_get_length (&validity->sign.signers);
+	if (length)
+		add_cert_table (html, g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length), &validity->sign.signers, length, part, validity);
 
-	/* A single layer reports both headings even when one of them has
-	 * nothing to say, because "this message is not encrypted" is a warning
-	 * worth making in its own right. Per layer it is not: each layer of a
-	 * triple-wrapped message carries one of the two, so noting that the
-	 * outer signature applies no encryption is accurate but of no interest,
-	 * an outer signature never does -- while still being worded as a
-	 * warning, on a message that is encrypted. Report what the layer has. */
-	if (!per_layer || validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_NONE) {
-		e_util_markup_append_escaped (html,
-			"<b>%s</b><br>"
-			"%s<br>",
-			_("Digital Signature"),
-			secure_button_get_sign_description (validity->sign.status));
+	add_details_part (html, part, validity, validity->sign.description, "sign");
 
-		length = g_queue_get_length (&validity->sign.signers);
-		if (length) {
-			add_cert_table (html,
-				g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length),
-				&validity->sign.signers,
-				length, part, validity);
-		}
-
-		add_details_part (html, part, validity, validity->sign.description, "sign");
-
-		wrote_any = TRUE;
-	}
-
-	if (!per_layer || validity->encrypt.status != CAMEL_CIPHER_VALIDITY_ENCRYPT_NONE) {
-		if (wrote_any)
-			g_string_append (html, "<br>");
-
-		e_util_markup_append_escaped (html,
-			"<b>%s</b><br>"
-			"%s<br>",
-			_("Encryption"),
-			secure_button_get_encrypt_description (validity->encrypt.status));
-
-		length = g_queue_get_length (&validity->encrypt.encrypters);
-		if (length) {
-			add_cert_table (html, _("Encrypted by:"),
-				&validity->encrypt.encrypters,
-				length, part, validity);
-		}
-
-		add_details_part (html, part, validity, validity->encrypt.description, "encr");
-	}
+	g_string_append (html, "<br>");
+	secure_button_format_encryption (part, validity, html);
 
 	g_string_append (html, "</small></td></tr>\n");
 }
 
-/* One bar for one crypto system: the collapsed summary, then a details row for
- * each of that system's validities, outer signature first where there is one. */
+static gboolean
+secure_button_same_signers (CamelCipherValidity *validity1,
+			    CamelCipherValidity *validity2)
+{
+	GList *link1, *link2;
+
+	if (g_queue_get_length (&validity1->sign.signers) != g_queue_get_length (&validity2->sign.signers))
+		return FALSE;
+
+	link1 = g_queue_peek_head_link (&validity1->sign.signers);
+	link2 = g_queue_peek_head_link (&validity2->sign.signers);
+
+	for (; link1 && link2; link1 = g_list_next (link1), link2 = g_list_next (link2)) {
+		CamelCipherCertInfo *info1 = link1->data, *info2 = link2->data;
+
+		if (g_strcmp0 (info1->name, info2->name) != 0 || g_strcmp0 (info1->email, info2->email) != 0)
+			return FALSE;
+
+#if defined (ENABLE_SMIME)
+		if ((info1->cert_data != NULL) != (info2->cert_data != NULL))
+			return FALSE;
+
+		if (info1->cert_data && !CERT_CompareCerts (info1->cert_data, info2->cert_data))
+			return FALSE;
+#endif
+	}
+
+	return TRUE;
+}
+
+static void
+secure_button_format_layer (EMailPart *part,
+			    EMailPartValidityPair *pair,
+			    const gchar *layer_label,
+			    GString *html)
+{
+	CamelCipherValidity *validity = pair->validity;
+	const gchar *desc = NULL;
+	guint length;
+
+	if ((pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0)
+		desc = smime_sign_table[validity->sign.status].shortdesc_mismatch;
+	if (!desc)
+		desc = smime_sign_table[validity->sign.status].shortdesc;
+
+	e_util_markup_append_escaped (html, "<div style=\"margin-left:12px; margin-top:4px;\"><b>%s</b><br>%s<br>", layer_label, gettext (desc));
+
+	length = g_queue_get_length (&validity->sign.signers);
+	if (length)
+		add_cert_table (html, g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length), &validity->sign.signers, length, part, validity);
+
+	add_details_part (html, part, validity, validity->sign.description, "sign");
+
+	g_string_append (html, "</div>");
+}
+
+static void
+secure_button_format_layered_details (EMailPart *part,
+				      EMailPartValidityPair *outer,
+				      EMailPartValidityPair *inner,
+				      GString *html)
+{
+	CamelCipherValiditySign sign_status = inner->validity->sign.status;
+
+	if (secure_button_sign_severity (outer->validity->sign.status) > secure_button_sign_severity (sign_status))
+		sign_status = outer->validity->sign.status;
+
+	e_util_markup_append_escaped (html,
+		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>"
+		"<b>%s</b><br>%s<br>",
+		inner->validity, _("Digital Signature"), secure_button_get_sign_description (sign_status));
+
+	secure_button_format_layer (part, outer, _("Outer signature (over the encrypted message)"), html);
+	secure_button_format_layer (part, inner, _("Inner signature (over the message content)"), html);
+
+	g_string_append (html, "<br>");
+	secure_button_format_encryption (part, inner->validity, html);
+
+	g_string_append (html, "</small></td></tr>\n");
+}
+
 static void
 secure_button_format_system (EMailPart *part,
 			     EMailPartValidityFlags crypto_system,
 			     const gchar *system_label,
 			     GString *html)
 {
+	EMailPartValidityPair *outer = NULL, *inner = NULL;
 	GList *head, *link;
-	gboolean has_outer = FALSE;
-	gint pass;
 
 	head = g_queue_peek_head_link (&part->validities);
 
-	for (link = head; link != NULL && !has_outer; link = g_list_next (link)) {
+	for (link = head; link != NULL; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 
-		has_outer = secure_button_pair_is_system (pair, crypto_system) &&
-			(pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
+		if (!secure_button_pair_is_system (pair, crypto_system))
+			continue;
+
+		if ((pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0) {
+			if (!outer)
+				outer = pair;
+		} else if (!inner) {
+			inner = pair;
+		}
 	}
 
 	if (!secure_button_format_summary (part, crypto_system, system_label, html))
 		return;
 
-	/* Without an outer signature there is a single layer, so the validities
-	 * are shown in the order they were found and are not labelled. With one
-	 * -- an RFC 2634 triple-wrapped message -- show the outer signature
-	 * first: it is what covers the message as it travelled, so it is the
-	 * one that fails if the message was tampered with, and burying it under
-	 * the inner signature's result would hide that. */
-	for (pass = 0; pass <= (has_outer ? 1 : 0); pass++) {
+	/* List the layers apart only when they tell something different */
+	if (outer && inner && (
+	    outer->validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_GOOD ||
+	    inner->validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_GOOD ||
+	    !secure_button_same_signers (outer->validity, inner->validity))) {
+		secure_button_format_layered_details (part, outer, inner, html);
+	} else {
 		for (link = head; link != NULL; link = g_list_next (link)) {
 			EMailPartValidityPair *pair = link->data;
-			const gchar *layer_label = NULL;
-			gboolean is_outer;
 
-			if (!secure_button_pair_is_system (pair, crypto_system))
+			if (!secure_button_pair_is_system (pair, crypto_system) || (pair == outer && inner))
 				continue;
 
-			is_outer = (pair->validity_type & E_MAIL_PART_VALIDITY_OUTER) != 0;
-
-			if (has_outer) {
-				if (is_outer != (pass == 0))
-					continue;
-
-				layer_label = is_outer ?
-					_("Outer signature (over the encrypted message)") :
-					_("Inner signature (over the message content)");
-			}
-
-			secure_button_format_details (part, pair->validity, layer_label, html);
+			secure_button_format_details (part, pair->validity, html);
 		}
 	}
 
