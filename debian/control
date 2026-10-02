@@ -1,0 +1,240 @@
+Source: evolution
+Standards-Version: 4.7.3
+Maintainer: Debian GNOME Maintainers <pkg-gnome-maintainers@lists.alioth.debian.org>
+Uploaders: Jeremy Bícha <jbicha@ubuntu.com>,
+           Laurent Bigonville <bigon@debian.org>,
+           Sebastien Bacher <seb128@debian.org>,
+Section: gnome
+Build-Depends: debhelper-compat (= 13),
+               dpkg-dev,
+               cmake,
+               evolution-data-server-dev (<< 3.61),
+               evolution-data-server-dev (>= 3.60.2),
+               gnome-pkg-tools,
+               gsettings-desktop-schemas-dev,
+               gtk-doc-tools,
+               highlight,
+               intltool,
+               itstool,
+               libatk1.0-dev,
+               libcairo2-dev,
+               libcamel1.2-dev (>= 3.60.2),
+               libcanberra-gtk3-dev,
+               libcmark-dev,
+               libebackend1.2-dev (>= 3.60.2),
+               libebook1.2-dev (>= 3.60.2),
+               libecal2.0-dev (>= 3.60.2),
+               libedataserver1.2-dev (>= 3.60.2),
+               libedataserverui1.2-dev (>= 3.60.2),
+               libenchant-2-dev,
+               libgail-3-dev,
+               libgdk-pixbuf-2.0-dev,
+               libgeocode-glib-dev,
+               libglib2.0-dev,
+               libgnome-autoar-0-dev,
+               libgnome-autoar-gtk-0-dev,
+               libgnome-desktop-3-dev,
+               libgspell-1-dev,
+               libgtk-3-dev,
+               libgweather-4-dev,
+               libical-dev,
+               libice-dev,
+               libldap2-dev,
+               libnotify-dev,
+               libnspr4-dev,
+               libnss3-dev,
+               libpst-dev,
+               libsm-dev,
+               libsoup-3.0-dev,
+               libsqlite3-dev,
+               libtool,
+               libunity-dev [linux-any],
+               libwebkit2gtk-4.1-dev,
+               libxml2-dev,
+               libytnef0-dev,
+               pkgconf,
+               psmisc,
+               shared-mime-info,
+Vcs-Browser: https://salsa.debian.org/gnome-team/evolution
+Vcs-Git: https://salsa.debian.org/gnome-team/evolution.git
+Homepage: https://gitlab.gnome.org/GNOME/evolution/-/wikis/home
+
+Package: evolution
+Architecture: any
+Depends: evolution-common (= ${source:Version}),
+         evolution-data-server (<< 3.61),
+         evolution-data-server (>= 3.60.2),
+         psmisc,
+         ${misc:Depends},
+         ${shlibs:Depends},
+Recommends: evolution-ews,
+            evolution-plugin-bogofilter | evolution-plugin-spamassassin,
+            evolution-plugin-pstimport,
+            evolution-plugins,
+            yelp,
+Suggests: evolution-plugins-experimental,
+          gnupg,
+          network-manager,
+Provides: imap-client,
+          mail-reader,
+Description: groupware suite with mail client and organizer
+ Evolution is a groupware suite which integrates mail, calendar,
+ address book, to-do list and memo tools.
+ .
+ Additional features include integration with Exchange
+ servers, newsgroup client, LDAP support and web calendars
+ .
+ The following plugins belonging to the "base" set are included.
+  - calendar-file
+  - calendar-http
+  - itip-formatter
+  - default-source
+  - addressbook-file
+  - mark-all-read
+  - publish-calendar
+  - caldav
+  - imap-features
+  - google-account-setup
+  - webdav-account-setup
+  - calendar-weather
+  - sa-junk-plugin
+  - bogo-junk-pluginm
+
+Package: libevolution
+Architecture: any
+Section: libs
+Depends: evolution-common (= ${source:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends},
+Breaks: evolution-dev (<< 3.52.1-2~),
+Replaces: evolution-dev (<< 3.52.1-2~),
+Description: evolution libraries
+ This package contains libraries used by Evolution.
+
+Package: evolution-common
+Architecture: all
+Depends: ${misc:Depends},
+Recommends: evolution,
+Description: architecture independent files for Evolution
+ Evolution is a groupware suite which integrates mail, calendar,
+ address book, to-do list and memo tools.
+ .
+ This package contains the architecture independent files needed
+ by the evolution package.
+
+Package: evolution-dev
+Architecture: any
+Section: devel
+Depends:
+# evolution-plugin
+         libcamel1.2-dev,
+# evolution-shell
+         libebackend1.2-dev,
+         libedataserver1.2-dev,
+         libedataserverui1.2-dev,
+         libenchant-2-dev,
+         libevolution (= ${binary:Version}),
+         libgnome-desktop-3-dev,
+         libgtk-3-dev,
+         libwebkit2gtk-4.1-dev,
+         ${misc:Depends},
+         ${shlibs:Depends},
+Description: development library files for Evolution
+ Evolution is a groupware suite which integrates mail, calendar,
+ address book, to-do list and memo tools.
+ .
+ This package contains header and static library files
+ for developing Evolution components.
+
+Package: evolution-plugins
+Architecture: any
+Depends: evolution (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends},
+Recommends: notification-daemon,
+Description: standard plugins for Evolution
+ Evolution is a groupware suite which integrates mail, calendar,
+ address book, to-do list and memo tools.
+ .
+ This package includes plugins for evolution. The plugins belong
+ to the set of "standard" plugins, which are useful, but not
+ necessary for a functioning application.
+ .
+ The following standard plugins are included.
+  - attachment-reminder
+  - bbdb
+  - dbx-import
+  - email-custom-header
+  - face
+  - mailing-list-actions
+  - mail-notification
+  - mail-to-task
+  - prefer-plain
+  - save-calendar
+  - sender-validator
+  - templates
+
+Package: evolution-plugins-experimental
+Architecture: any
+Depends: evolution (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends},
+Description: experimental plugins for Evolution
+ Evolution is a groupware suite which integrates mail, calendar,
+ address book, to-do list and memo tools.
+ .
+ This package includes plugins for Evolution. The plugins belong
+ to the set of "experimental" plugins, which are unsupported, have
+ undergone little testing, and might cause problems to the rest of
+ Evolution. Use with care.
+ .
+ The following plugins are included.
+  - external-editor
+  - contacts-map
+
+Package: evolution-plugin-bogofilter
+Architecture: any
+Depends: bogofilter,
+         evolution (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends},
+Description: standard plugins for Evolution (bogofilter)
+ Evolution is a groupware suite which integrates mail, calendar,
+ address book, to-do list and memo tools.
+ .
+ This package includes the bogofilter spam filter module for Evolution.
+
+Package: evolution-plugin-pstimport
+Architecture: any
+Depends: evolution (= ${binary:Version}),
+         ${misc:Depends},
+         ${shlibs:Depends},
+Description: standard plugins for Evolution (pstimport)
+ Evolution is a groupware suite which integrates mail, calendar,
+ address book, to-do list and memo tools.
+ .
+ This package includes a plugin for Evolution that enables importing
+ Microsoft Outlook messages from a PST file.
+
+Package: evolution-plugin-spamassassin
+Architecture: any
+Depends: evolution (= ${binary:Version}),
+         spamassassin,
+         ${misc:Depends},
+         ${shlibs:Depends},
+Description: standard plugins for Evolution (spamassassin)
+ Evolution is a groupware suite which integrates mail, calendar,
+ address book, to-do list and memo tools.
+ .
+ This package includes the spamassasin spam filter module for Evolution.
+
+#Package: evolution-tests
+#Architecture: any
+#Depends: ${shlibs:Depends},
+#         ${misc:Depends},
+#Description: Installed tests for Evolution
+# Evolution is a groupware suite which integrates mail, calendar,
+# address book, to-do list and memo tools.
+# .
+# This package contains test programs, designed to be run as part of a
+# regression testsuite.
