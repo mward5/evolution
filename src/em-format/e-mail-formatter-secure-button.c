@@ -564,35 +564,43 @@ secure_button_format_details (EMailPart *part,
 	g_string_append (html, "</small></td></tr>\n");
 }
 
+#if defined (ENABLE_SMIME)
 static gboolean
-secure_button_same_signers (CamelCipherValidity *validity1,
-			    CamelCipherValidity *validity2)
+secure_button_smime_signer_listed (GQueue *signers,
+				   CamelCipherCertInfo *info)
 {
-	GList *link1, *link2;
+	GList *link;
 
-	if (g_queue_get_length (&validity1->sign.signers) != g_queue_get_length (&validity2->sign.signers))
+	for (link = g_queue_peek_head_link (signers); link; link = g_list_next (link)) {
+		CamelCipherCertInfo *known = link->data;
+
+		if (known->cert_data && CERT_CompareCerts (known->cert_data, info->cert_data))
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/* Every outer signer also signed the inner layer */
+static gboolean
+secure_button_same_signers_smime (CamelCipherValidity *outer,
+				  CamelCipherValidity *inner)
+{
+	GList *link;
+
+	if (g_queue_is_empty (&outer->sign.signers))
 		return FALSE;
 
-	link1 = g_queue_peek_head_link (&validity1->sign.signers);
-	link2 = g_queue_peek_head_link (&validity2->sign.signers);
+	for (link = g_queue_peek_head_link (&outer->sign.signers); link; link = g_list_next (link)) {
+		CamelCipherCertInfo *info = link->data;
 
-	for (; link1 && link2; link1 = g_list_next (link1), link2 = g_list_next (link2)) {
-		CamelCipherCertInfo *info1 = link1->data, *info2 = link2->data;
-
-		if (g_strcmp0 (info1->name, info2->name) != 0 || g_strcmp0 (info1->email, info2->email) != 0)
+		if (!info->cert_data || !secure_button_smime_signer_listed (&inner->sign.signers, info))
 			return FALSE;
-
-#if defined (ENABLE_SMIME)
-		if ((info1->cert_data != NULL) != (info2->cert_data != NULL))
-			return FALSE;
-
-		if (info1->cert_data && !CERT_CompareCerts (info1->cert_data, info2->cert_data))
-			return FALSE;
-#endif
 	}
 
 	return TRUE;
 }
+#endif
 
 static void
 secure_button_format_layer (EMailPart *part,
@@ -653,6 +661,7 @@ secure_button_format_system (EMailPart *part,
 {
 	EMailPartValidityPair *outer = NULL, *inner = NULL;
 	GList *head, *link;
+	gboolean merge_layers = FALSE;
 
 	head = g_queue_peek_head_link (&part->validities);
 
@@ -673,11 +682,14 @@ secure_button_format_system (EMailPart *part,
 	if (!secure_button_format_summary (part, crypto_system, system_label, html))
 		return;
 
-	/* List the layers apart only when they tell something different */
-	if (outer && inner && (
-	    outer->validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_GOOD ||
-	    inner->validity->sign.status != CAMEL_CIPHER_VALIDITY_SIGN_GOOD ||
-	    !secure_button_same_signers (outer->validity, inner->validity))) {
+#if defined (ENABLE_SMIME)
+	merge_layers = outer && inner && crypto_system == E_MAIL_PART_VALIDITY_SMIME &&
+		outer->validity->sign.status == CAMEL_CIPHER_VALIDITY_SIGN_GOOD &&
+		inner->validity->sign.status == CAMEL_CIPHER_VALIDITY_SIGN_GOOD &&
+		secure_button_same_signers_smime (outer->validity, inner->validity);
+#endif
+
+	if (outer && inner && !merge_layers) {
 		secure_button_format_layered_details (part, outer, inner, html);
 	} else {
 		for (link = head; link != NULL; link = g_list_next (link)) {
