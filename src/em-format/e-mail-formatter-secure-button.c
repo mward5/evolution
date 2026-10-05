@@ -468,14 +468,12 @@ secure_button_format_summary (EMailPart *part,
 	}
 
 	if (system_label && *system_label) {
-		gchar *escaped, *markup;
+		gchar *markup;
 
-		escaped = g_markup_escape_text (system_label, -1);
-		markup = g_strdup_printf ("<b>%s</b>&nbsp;&mdash; ", escaped);
+		markup = g_markup_printf_escaped ("<b>%s</b>&nbsp;&mdash; ", system_label);
 		g_string_prepend (buffer, markup);
 
 		g_free (markup);
-		g_free (escaped);
 	}
 
 	description = g_string_free (buffer, FALSE);
