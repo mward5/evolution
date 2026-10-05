@@ -47,7 +47,6 @@ empe_mp_signed_is_signature_type (CamelContentType *content_type)
 	if (!content_type)
 		return FALSE;
 
-	/* The same spellings the protocol dispatch below accepts. */
 	return camel_content_type_is (content_type, "application", "pkcs7-signature") ||
 		camel_content_type_is (content_type, "application", "xpkcs7signature") ||
 		camel_content_type_is (content_type, "application", "xpkcs7-signature") ||
@@ -168,6 +167,8 @@ empe_mp_signed_parse (EMailParserExtension *extension,
 		return TRUE;
 	}
 
+	validity_type |= E_MAIL_PART_VALIDITY_SIGNED;
+
 	valid = camel_cipher_context_verify_sync (
 		cipher, part, cancellable, &local_error);
 
@@ -196,22 +197,8 @@ empe_mp_signed_parse (EMailParserExtension *extension,
 
 		subpart = camel_multipart_get_part (multipart, i);
 
-		/* The signature part proves the content, it is not content
-		 * itself, so there is nothing to show for it. Skip it here,
-		 * rather than dispatching it and leaving its handler to work
-		 * out that the parent is this multipart/signed: that lookup
-		 * walks the message tree, which does not reach a
-		 * multipart/signed recovered from a decrypted part (the inner
-		 * layer of a triple-wrapped message lives in the decrypted
-		 * copy, not in the message), so the signature ended up being
-		 * shown as an attachment.
-		 *
-		 * Require both the position CamelMultipartSigned reserves for
-		 * the signature and a signature type, so that only that part
-		 * is skipped and a multipart the parser could not lay out is
-		 * left to the handlers as before. */
-		if (i == CAMEL_MULTIPART_SIGNED_SIGNATURE &&
-		    empe_mp_signed_is_signature_type (camel_mime_part_get_content_type (subpart)))
+		/* Not content, do not show it as an attachment */
+		if (i == CAMEL_MULTIPART_SIGNED_SIGNATURE && empe_mp_signed_is_signature_type (camel_mime_part_get_content_type (subpart)))
 			continue;
 
 		g_string_append_printf (part_id, ".signed.%d", i);
@@ -228,23 +215,10 @@ empe_mp_signed_parse (EMailParserExtension *extension,
 
 		for (link = head; link != NULL; link = g_list_next (link)) {
 			EMailPart *mail_part = link->data;
-			guint32 validity_flags;
+			guint32 validity_flags = validity_type;
 
-			validity_flags = validity_type | E_MAIL_PART_VALIDITY_SIGNED;
-
-			/* The part is already both signed and encrypted, so this
-			 * multipart/signed is the outer signature of a
-			 * triple-wrapped message (RFC 2634): it covers the
-			 * ciphertext, where the signature inside the encryption
-			 * covers the plaintext. Report it as its own result --
-			 * camel_cipher_validity_envelope() has no case for that
-			 * nesting and would drop one of the two.
-			 *
-			 * Encrypted content that is not itself signed is left
-			 * alone: that pairing is one envelope() does merge, into
-			 * the single "signed and encrypted" result shown today. */
-			if (e_mail_part_get_validity (mail_part, validity_type |
-			    E_MAIL_PART_VALIDITY_SIGNED | E_MAIL_PART_VALIDITY_ENCRYPTED))
+			/* Signed over encrypted content which is itself signed (RFC 2634 triple-wrap) */
+			if (e_mail_part_get_validity (mail_part, validity_type | E_MAIL_PART_VALIDITY_ENCRYPTED))
 				validity_flags |= E_MAIL_PART_VALIDITY_OUTER;
 
 			e_mail_part_update_validity (mail_part, valid, validity_flags);
@@ -274,9 +248,7 @@ empe_mp_signed_parse (EMailParserExtension *extension,
 		mail_part = g_queue_peek_head (&work_queue);
 
 		if (mail_part != NULL)
-			e_mail_part_update_validity (
-				mail_part, valid,
-				validity_type | E_MAIL_PART_VALIDITY_SIGNED);
+			e_mail_part_update_validity (mail_part, valid, validity_type);
 
 		e_queue_transfer (&work_queue, out_mail_parts);
 

@@ -252,11 +252,7 @@ secure_button_clicked_cb (EWebView *web_view,
 
 	element_value += strlen (tmp);
 
-	/* There is one button per crypto system, and one details row per
-	 * validity within it -- a triple-wrapped message has one for each
-	 * signature layer -- so the button toggles its own system's rows and
-	 * leaves any other system's bar alone. The button carries the first
-	 * validity of its system, which is what identifies the group here. */
+	/* Toggle details of all validities of the button's crypto system */
 	for (link = g_queue_peek_head_link (&mail_part->validities); link != NULL; link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 

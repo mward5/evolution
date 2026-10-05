@@ -324,9 +324,7 @@ add_details_part (GString *html,
 		details);
 }
 
-/* Rank the sign statuses by how much they should worry the reader, so that a
- * message carrying more than one signature can be summarised by its weakest
- * one. The enum order does not express this. */
+/* Higher is worse */
 static gint
 secure_button_sign_severity (CamelCipherValiditySign status)
 {
@@ -355,19 +353,15 @@ secure_button_cert_info_listed (GQueue *listed,
 	for (link = g_queue_peek_head_link (listed); link; link = g_list_next (link)) {
 		CamelCipherCertInfo *known = link->data;
 
-		if (g_strcmp0 (known->email, info->email) == 0 &&
-		    g_strcmp0 (known->name, info->name) == 0)
+		if (g_strcmp0 (known->email, info->email) == 0 && g_strcmp0 (known->name, info->name) == 0)
 			return TRUE;
 	}
 
 	return FALSE;
 }
 
-#define SECURE_BUTTON_CRYPTO_SYSTEMS \
-	(E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)
+#define SECURE_BUTTON_CRYPTO_SYSTEMS (E_MAIL_PART_VALIDITY_PGP | E_MAIL_PART_VALIDITY_SMIME)
 
-/* Whether @pair belongs to @crypto_system, which is the PGP bit, the S/MIME bit, or 0
- * for a validity that named neither. */
 static gboolean
 secure_button_pair_is_system (EMailPartValidityPair *pair,
 			      EMailPartValidityFlags crypto_system)
@@ -378,16 +372,6 @@ secure_button_pair_is_system (EMailPartValidityPair *pair,
 	return (pair->validity_type & SECURE_BUTTON_CRYPTO_SYSTEMS) == crypto_system;
 }
 
-/* The collapsed row for one crypto system, summarising that system's
- * validities together: the weakest signature status picks the icon and the
- * colour, and the signers are listed as one, so a triple-wrapped message signed
- * by two different certificates reads as
- * "Valid signature (mike@example.com, dlp@example.net)" and one signed twice by
- * the same certificate reads exactly as a singly signed message does. Which
- * signature belongs to which layer is left to the details rows.
- *
- * Opens the table the details rows are appended to; returns FALSE, having
- * written nothing, when the part carries no validity for @crypto_system. */
 static gboolean
 secure_button_format_summary (EMailPart *part,
 			      EMailPartValidityFlags crypto_system,
@@ -417,15 +401,9 @@ secure_button_format_summary (EMailPart *part,
 		if (!first_validity)
 			first_validity = pair->validity;
 
-		if (secure_button_sign_severity (pair->validity->sign.status) >
-		    secure_button_sign_severity (sign_status))
+		if (secure_button_sign_severity (pair->validity->sign.status) > secure_button_sign_severity (sign_status))
 			sign_status = pair->validity->sign.status;
 
-		/* Any layer's mismatch is reported, not only the weakest layer's.
-		 * RFC 2634 allows the outer signature to come from a different
-		 * entity than the inner one, such as a gateway, and two layers
-		 * with the same status would otherwise let whichever was found
-		 * first decide whether the mismatch is shown. */
 		if ((pair->validity_type & E_MAIL_PART_VALIDITY_SENDER_SIGNER_MISMATCH) != 0)
 			sender_signer_mismatch = TRUE;
 
@@ -505,8 +483,7 @@ secure_button_format_summary (EMailPart *part,
 	g_string_append_printf (html,
 		"<td style=\"width:1px;\"><button type=\"button\" class=\"secure-button\" id=\"secure-button\" value=\"%p:%p\" accesskey=\"\" style=\"vertical-align:middle;\">"
 		"<img src=\"gtk-stock://%s?size=%d\" width=\"%dpx\" height=\"%dpx\" style=\"vertical-align:middle;\"></button></td><td><span style=\"vertical-align:middle;\">",
-		part, first_validity, icon_name, GTK_ICON_SIZE_LARGE_TOOLBAR,
-		icon_width, icon_height);
+		part, first_validity, icon_name, GTK_ICON_SIZE_LARGE_TOOLBAR, icon_width, icon_height);
 
 	g_queue_foreach (&signers, add_photo_cb, html);
 	if (encrypters)
@@ -530,8 +507,11 @@ secure_button_format_encryption (EMailPart *part,
 	e_util_markup_append_escaped (html, "<b>%s</b><br>%s<br>", _("Encryption"), secure_button_get_encrypt_description (validity->encrypt.status));
 
 	length = g_queue_get_length (&validity->encrypt.encrypters);
-	if (length)
-		add_cert_table (html, _("Encrypted by:"), &validity->encrypt.encrypters, length, part, validity);
+	if (length) {
+		add_cert_table (html, _("Encrypted by:"),
+			&validity->encrypt.encrypters,
+			length, part, validity);
+	}
 
 	add_details_part (html, part, validity, validity->encrypt.description, "encr");
 }
@@ -547,12 +527,19 @@ secure_button_format_details (EMailPart *part,
 
 	e_util_markup_append_escaped (html,
 		"<tr id=\"secure-button-details-%p\" class=\"secure-button-details\" hidden><td></td><td><small>"
-		"<b>%s</b><br>%s<br>",
-		validity, _("Digital Signature"), secure_button_get_sign_description (validity->sign.status));
+		"<b>%s</b><br>"
+		"%s<br>",
+		validity,
+		_("Digital Signature"),
+		secure_button_get_sign_description (validity->sign.status));
 
 	length = g_queue_get_length (&validity->sign.signers);
-	if (length)
-		add_cert_table (html, g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length), &validity->sign.signers, length, part, validity);
+	if (length) {
+		add_cert_table (html,
+			g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length),
+			&validity->sign.signers,
+			length, part, validity);
+	}
 
 	add_details_part (html, part, validity, validity->sign.description, "sign");
 
@@ -618,8 +605,12 @@ secure_button_format_layer (EMailPart *part,
 	e_util_markup_append_escaped (html, "<div style=\"margin-left:12px; margin-top:4px;\"><b>%s</b><br>%s<br>", layer_label, gettext (desc));
 
 	length = g_queue_get_length (&validity->sign.signers);
-	if (length)
-		add_cert_table (html, g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length), &validity->sign.signers, length, part, validity);
+	if (length) {
+		add_cert_table (html,
+			g_dngettext (GETTEXT_PACKAGE, "Signer:", "Signers:", length),
+			&validity->sign.signers,
+			length, part, validity);
+	}
 
 	add_details_part (html, part, validity, validity->sign.description, "sign");
 
@@ -711,7 +702,7 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
                            GOutputStream *stream,
                            GCancellable *cancellable)
 {
-	/* PGP, S/MIME, and a validity naming neither. */
+	/* PGP, S/MIME and none */
 	EMailPartValidityFlags crypto_systems[3];
 	GList *head, *link;
 	GString *html;
@@ -724,14 +715,7 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
 
 	head = g_queue_peek_head_link (&part->validities);
 
-	/* One bar per crypto system, in the order each first appears -- for a
-	 * message signed with both, the order the layers were applied.
-	 *
-	 * PGP and S/MIME are independent results about the same message, and
-	 * summarising them together would put a GPG signer on the S/MIME
-	 * signature line and let a bad signature under one system recolour the
-	 * other. Within a system the layers do get merged, which is what the
-	 * inner and outer signatures of a triple-wrapped message want. */
+	/* One bar per crypto system */
 	for (link = head; link != NULL && n_crypto_systems < G_N_ELEMENTS (crypto_systems); link = g_list_next (link)) {
 		EMailPartValidityPair *pair = link->data;
 		EMailPartValidityFlags crypto_system;
@@ -742,8 +726,9 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
 
 		crypto_system = pair->validity_type & SECURE_BUTTON_CRYPTO_SYSTEMS;
 
-		for (ii = 0; ii < n_crypto_systems && !known; ii++)
+		for (ii = 0; ii < n_crypto_systems && !known; ii++) {
 			known = crypto_systems[ii] == crypto_system;
+		}
 
 		if (!known)
 			crypto_systems[n_crypto_systems++] = crypto_system;
@@ -754,10 +739,6 @@ emfe_secure_button_format (EMailFormatterExtension *extension,
 	for (ii = 0; ii < n_crypto_systems; ii++) {
 		const gchar *system_label = NULL;
 
-		/* Name the system only when the message carries more than one,
-		 * so an ordinary signed message reads exactly as it always has
-		 * and the name appears just where the bars would otherwise be
-		 * indistinguishable. */
 		if (n_crypto_systems > 1) {
 			if (crypto_systems[ii] == E_MAIL_PART_VALIDITY_PGP)
 				system_label = _("GPG");

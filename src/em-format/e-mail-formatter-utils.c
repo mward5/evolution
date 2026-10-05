@@ -669,20 +669,11 @@ e_mail_formatter_format_security_header (EMailFormatter *formatter,
 					break;
 				}
 
-				/* Check each entry on its own rather than asking a
-				 * single validity pair to satisfy check_valid_flags as
-				 * a whole. A pair only ever describes one crypto
-				 * system -- e_mail_part_update_validity() keeps PGP and
-				 * S/MIME in separate pairs by design -- so the combined
-				 * lookup can never succeed on a message carrying both,
-				 * and every such message read as partially secured
-				 * however completely it was covered.
-				 *
-				 * The merged mask cannot be tested entry-wise either:
-				 * with PGP-signed and S/MIME-encrypted present it
-				 * contains the bits of "S/MIME signed" without any part
-				 * being S/MIME signed. Which entries genuinely appear
-				 * is recorded separately, above. */
+				/* Test the entries that genuinely appeared, not
+				 * check_valid_flags as a whole: a pair only ever
+				 * describes one crypto system, so the combined
+				 * lookup can never succeed on a message carrying
+				 * both. */
 				for (ii = 0; ii < G_N_ELEMENTS (validity_flags); ii++) {
 					if (present[ii] &&
 					    !e_mail_part_get_validity (mail_part, validity_flags[ii].flags)) {
