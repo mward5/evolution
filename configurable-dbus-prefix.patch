@@ -1,0 +1,42 @@
+diff -up evolution-3.48.1 evolution-3.48
+diff -up evolution-3.48.1/docs/evolution.1 evolution-3.48.1/docs/evolution
+diff -up evolution-3.48.1/src/modules/backup-restore/evolution-backup-tool.c.1 evolution-3.48.1/src/modules/backup-restore/evolution-backup-tool.c
+--- evolution-3.48.1/src/modules/backup-restore/evolution-backup-tool.c.1	2023-11-27 13:12:25.099463743 -0500
++++ evolution-3.48.1/src/modules/backup-restore/evolution-backup-tool.c	2023-11-27 13:14:38.640243434 -0500
+@@ -674,7 +674,7 @@ get_source_manager_reload_command (void)
+ 			g_string_free (tmp, TRUE);
+ 			tmp = NULL;
+ 
+-			base_filename = g_strdup (EDS_SOURCES_DBUS_SERVICE_NAME);
++			base_filename = g_ascii_strdown (EDS_SOURCES_DBUS_SERVICE_NAME, -1);
+ 
+ 			if (!base_filename || !*base_filename) {
+ 				g_free (base_filename);
+@@ -690,14 +690,16 @@ get_source_manager_reload_command (void)
+ 
+ 			while (!tmp) {
+ 				const gchar *name;
++				gchar *name_down;
+ 
+ 				name = g_dir_read_name (dir);
++				name_down = g_ascii_strdown (name, -1);
+ 
+ 				if (!name)
+ 					break;
+ 
+-				if (g_ascii_strncasecmp (name, base_filename, base_filename_len) == 0 &&
+-				    g_ascii_strncasecmp (name + strlen (name) - 8, ".service", 8) == 0) {
++				if (strstr (name_down, base_filename) != NULL &&
++				    strncmp (name_down + strlen (name) - 8, ".service", 8) == 0) {
+ 					gchar *filename;
+ 
+ 					filename = g_strconcat ("$DBUSDATADIR", G_DIR_SEPARATOR_S, name, NULL);
+@@ -724,6 +726,8 @@ get_source_manager_reload_command (void)
+ 						g_free (str);
+ 					}
+ 				}
++
++				g_free (name_down);
+ 			}
+ 
+ 			g_free (base_filename);
