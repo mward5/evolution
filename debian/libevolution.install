@@ -1,0 +1,11 @@
+usr/lib/evolution-data-server/camel-providers/libcamelrss.so
+usr/lib/evolution-data-server/camel-providers/libcamelrss.urls
+usr/lib/evolution-data-server/ui-modules/module-evolution-alarm-notify.so
+usr/lib/evolution/*.so.*
+usr/lib/evolution/libevolution-rss-common.so
+usr/lib/evolution/libevcardeditor.so
+usr/lib/evolution/modules/*.so
+usr/lib/evolution/web-extensions/*.so
+usr/lib/evolution/web-extensions/webkit-editor/*.so
+usr/libexec/evolution/evolution-backup
+usr/libexec/evolution/killev
