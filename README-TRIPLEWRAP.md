@@ -11,9 +11,11 @@ attachment instead. Evolution could not produce the triple-wrapped form, so
 mail sent to such a recipient was unreadable. See the design document for the
 detail and the sources.
 
-**Status:** working. Verified structurally and cryptographically, and confirmed
-end to end: a message from this build was rendered correctly, with no
-attachment, by a Google Workspace recipient. Not submitted upstream.
+**Status:** working, and merged upstream for Evolution 3.63.1 as
+GNOME/evolution!242 and !243. This fork carries those two commits on the stable
+3.62.1 release until distributions ship 3.63 or later. Confirmed end to end: a
+message from this build was rendered correctly, with no attachment, by a Google
+Workspace recipient.
 
 See [`docs/SMIME-Triple-Wrap-Design.md`](docs/SMIME-Triple-Wrap-Design.md) for
 the design, the signature scopes, and — importantly — the list of RFC 2634
@@ -21,31 +23,20 @@ features this does *not* implement.
 
 ## What changed
 
-Four commits on top of upstream `3.60.2`, all in
-[`src/composer/e-msg-composer.c`](src/composer/e-msg-composer.c), function
-`composer_build_message_smime()`:
+Upstream tag `3.62.1` plus two commits cherry-picked from upstream `master`:
 
-1. **`composer: triple-wrap S/MIME (sign→encrypt→outer sign) for Gmail`**
-   When both S/MIME sign and encrypt are enabled, add an outer
-   `multipart/signed` (SHA-256) over the encrypted body. (The vendor name in
-   this subject is a leftover from early development and comes out when the
-   series is squashed for upstream submission.)
-2. **`composer: pass "" to camel_mime_part_set_description (not NULL)`**
-   Camel rejects `NULL` there with a `g_return_if_fail`.
-3. **`composer: sign the enveloped-data part, not the whole message`**
-   The outer signature covered the entire message, which serialised every
-   RFC822 header into the signed body — including the internal
-   `X-Evolution-Identity`, `X-Evolution-Fcc` and `X-Evolution-Transport`
-   headers, which are otherwise stripped before sending. It now covers the
-   `enveloped-data` body part and its `Content-*` headers only.
-4. **`composer: do not write a transfer encoding for the outer multipart`**
-   The encrypt step left the message claiming `base64`, which a `multipart`
-   body may not use (RFC 2045 §6.4). Commits 2–4 also drop the leftover
-   `Content-Disposition` and `Content-Description` headers.
+1. **GNOME/evolution!242** — Mail: Triple-wrap S/MIME encrypted&signed messages
+   (RFC 2634). The composer adds an outer `multipart/signed` over the
+   `enveloped-data` part when a message is both signed and encrypted, and the
+   formatter reports the inner and outer signatures.
+2. **GNOME/evolution!243** — EMailFormatter: Judge each crypto system separately
+   in the Security header, so a message signed with both GPG and S/MIME is no
+   longer labelled "partially" signed.
 
 The companion change lives in
 [`mward5/evolution-data-server`](https://github.com/mward5/evolution-data-server)
-(`triple-wrap` branch): a `Content-Description` on the S/MIME signature part.
+(`triple-wrap` branch): GNOME/evolution-data-server!256, which combines the
+results of all signers of an S/MIME signature. Build both at the same version.
 
 ## Verification
 
@@ -65,16 +56,16 @@ but no primary source has been found.
 
 - **`master`** — unmodified mirror of upstream GNOME `master`, for diffing and
   rebasing.
-- **`triple-wrap`** *(this branch)* — upstream tag `3.60.2` plus the four
-  commits above. A future GNOME merge request would be built from here, after
-  squashing. Rebased onto newer upstream tags in place rather than renamed per
-  version.
+- **`triple-wrap`** *(this branch)* — upstream tag `3.62.1` plus the two
+  commits above. Moved to newer upstream tags in place rather than renamed per
+  version; the history is never rewritten, so each move is a merge whose tree is
+  the new base plus the fork's commits (see `git log --first-parent`).
 - **`debian-packaging`** — a Debian source package (format `3.0 (quilt)`)
-  applying the same changes via `debian/patches/0006`–`0009`. Builds with
+  applying the same changes as one patch, `debian/patches/0001-*.patch`. Builds with
   `dpkg-buildpackage` / `gbp buildpackage`.
-- **`fedora-packaging`** — a Fedora dist-git style `evolution.spec` with
-  `Patch0001`–`Patch0004`. Builds with `fedpkg` / `rpmbuild -bs` (fetch the
-  `3.60.2` tarball per `sources`).
+- **`fedora-packaging`** — a Fedora dist-git style `evolution.spec` with the
+  same single patch as `Patch0001`. Builds with `fedpkg` / `rpmbuild -bs` (fetch
+  the `3.62.1` tarball per `sources`).
 
 Both packaging branches are regenerated from `triple-wrap` and keep no history
 of their own.

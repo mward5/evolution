@@ -29,7 +29,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      # evolution's Build-Depends pins evolution-data-server-dev (>= 3.60.2) and
+      # evolution's Build-Depends pins evolution-data-server-dev (>= 3.62.1) and
       # friends. Ubuntu's actual archive doesn't have that version yet (still on
       # 3.56.2 as of this writing), so we can't rely on apt to satisfy it. Build
       # and install our own evolution-data-server first, same as anyone who
@@ -108,7 +108,7 @@ jobs:
 
   build-rpm:
     runs-on: ubuntu-latest
-    container: fedora:44
+    container: fedora:45
     permissions:
       contents: read
       id-token: write
