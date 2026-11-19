@@ -150,3 +150,16 @@ ONLINE BUILD MANUAL
 An [online build manual][Build Manual] is also available.
 
 [Build Manual]: https://gitlab.gnome.org/GNOME/evolution/-/wikis/Building
+
+S/MIME TRIPLE-WRAP FORK
+------------------------
+
+This branch (``triple-wrap``) is a personal, experimental fork adding RFC 2634
+S/MIME triple-wrapping (sign → encrypt → outer sign) to the composer. It is not
+affiliated with the upstream Evolution project; everything above this section
+is the original upstream README.
+
+See [README-TRIPLEWRAP.md](README-TRIPLEWRAP.md) for what changed, how to build
+it, and which parts of RFC 2634 it does and does not implement, and
+[docs/SMIME-Triple-Wrap-Design.md](docs/SMIME-Triple-Wrap-Design.md) for the
+design.
