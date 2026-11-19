@@ -1,0 +1,234 @@
+name: Build release packages
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish as (defaults to the pushed tag)'
+        required: false
+
+permissions:
+  contents: read
+
+# The tag the release is published under. A tag push sets github.ref_name to
+# the tag, but a manual re-run sets it to the branch the workflow was
+# dispatched from, which is how the triplewrap6 packages came to be published
+# as "...-triple-wrap-debs.tar.gz". Resolve it once here, the same way the
+# publish job always has, so the artifact names agree with the release.
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      # evolution's Build-Depends pins evolution-data-server-dev (>= 3.62.1) and
+      # friends. Ubuntu's actual archive doesn't have that version yet (still on
+      # 3.56.2 as of this writing), so we can't rely on apt to satisfy it. Build
+      # and install our own evolution-data-server first, same as anyone who
+      # actually wants to use this fork would have to.
+      - uses: actions/checkout@v4
+        with:
+          repository: mward5/evolution-data-server
+          ref: debian-packaging
+          path: eds-src
+
+      - uses: actions/checkout@v4
+        with:
+          ref: debian-packaging
+          path: evolution-src
+
+      - name: Install build tooling
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends dpkg-dev build-essential fakeroot equivs devscripts
+
+      - name: Build and install evolution-data-server (build dependency)
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get build-dep -y ./eds-src
+          (cd eds-src && dpkg-buildpackage -us -uc -b)
+          apt-get install -y ./*.deb
+          rm -f ./*.deb ./*.changes ./*.buildinfo ./*.dsc ./*.tar.*
+
+      - name: Build .deb
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get build-dep -y ./evolution-src
+          (cd evolution-src && dpkg-buildpackage -us -uc -b)
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist debug
+          mv ./*.deb dist/
+          # Debug symbols are a large fraction of the bytes and are rarely
+          # wanted; keep them off the release page. They stay reachable as a
+          # workflow artifact for as long as retention allows.
+          mv dist/*dbgsym*.deb debug/ 2>/dev/null || true
+          # A single archive, so someone on the release web page can take the
+          # whole set in one download instead of clicking each package. It is
+          # attested alongside the individual packages below, so either form
+          # can be verified with `gh attestation verify`.
+          ( cd dist && tar -czf "../${BUNDLE}" *.deb && mv "../${BUNDLE}" . )
+          ls -l dist debug
+        env:
+          BUNDLE: ${{ github.event.repository.name }}-${{ env.RELEASE_TAG }}-debs.tar.gz
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.deb
+            dist/*.tar.gz
+
+      # One directory per artifact. upload-artifact roots an artifact at the
+      # least common ancestor of everything it matches, so listing paths from
+      # both dist/ and debug/ pushed those directory names into the artifact,
+      # and the release step then looked for dist/*.deb inside dist/dist/.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-packages-${{ env.RELEASE_TAG }}
+          path: dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-debug-symbols-${{ env.RELEASE_TAG }}
+          path: debug/*
+          if-no-files-found: ignore
+
+  build-rpm:
+    runs-on: ubuntu-latest
+    container: fedora:45
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      # Same reasoning as build-deb: don't assume the target distro's repos
+      # already carry our exact evolution-data-server version. Build and
+      # install it ourselves first, from the same fork.
+      - uses: actions/checkout@v4
+        with:
+          repository: mward5/evolution-data-server
+          ref: fedora-packaging
+          path: eds-src
+
+      - uses: actions/checkout@v4
+        with:
+          ref: fedora-packaging
+          path: evolution-src
+
+      - name: Install build tooling
+        run: |
+          dnf install -y rpm-build rpmdevtools 'dnf-command(builddep)' curl
+          rpmdev-setuptree
+
+      - name: Build and install evolution-data-server (build dependency)
+        run: |
+          dnf builddep -y ./eds-src/evolution-data-server.spec
+          NAME=$(awk -F': *' '/^Name:/{print $2; exit}' eds-src/evolution-data-server.spec)
+          VERSION=$(awk -F': *' '/^Version:/{print $2; exit}' eds-src/evolution-data-server.spec)
+          MAJMIN=$(echo "$VERSION" | cut -d. -f1,2)
+          curl -fL -o "$HOME/rpmbuild/SOURCES/${NAME}-${VERSION}.tar.xz" \
+            "https://download.gnome.org/sources/${NAME}/${MAJMIN}/${NAME}-${VERSION}.tar.xz"
+          cp -v eds-src/*.patch "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
+          cp -v eds-src/evolution-data-server.spec "$HOME/rpmbuild/SPECS/"
+          rpmbuild --define "_topdir $HOME/rpmbuild" -bb "$HOME/rpmbuild/SPECS/evolution-data-server.spec"
+          # Only main + devel are needed to satisfy evolution's BuildRequires,
+          # but the main package hard-Requires: %{name}-langpacks = %{version},
+          # so that has to come along too. perl/tests/doc/debuginfo don't, and
+          # pulling those in drags in extra runtime requirements (e.g.
+          # /usr/sbin/perl) that this minimal build container doesn't have.
+          dnf install -y \
+            "$HOME/rpmbuild/RPMS"/*/"${NAME}-${VERSION}"-*.rpm \
+            "$HOME/rpmbuild/RPMS"/*/"${NAME}-devel-${VERSION}"-*.rpm \
+            "$HOME/rpmbuild/RPMS"/*/"${NAME}-langpacks-${VERSION}"-*.rpm
+          rm -f "$HOME"/rpmbuild/RPMS/*/*.rpm
+
+      - name: Fetch upstream source tarball for evolution
+        run: |
+          NAME=$(awk -F': *' '/^Name:/{print $2; exit}' evolution-src/evolution.spec)
+          VERSION=$(awk -F': *' '/^Version:/{print $2; exit}' evolution-src/evolution.spec)
+          MAJMIN=$(echo "$VERSION" | cut -d. -f1,2)
+          curl -fL -o "$HOME/rpmbuild/SOURCES/${NAME}-${VERSION}.tar.xz" \
+            "https://download.gnome.org/sources/${NAME}/${MAJMIN}/${NAME}-${VERSION}.tar.xz"
+          dnf builddep -y ./evolution-src/evolution.spec
+
+      - name: Stage patches, support files and spec
+        run: |
+          cp -v evolution-src/*.patch "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
+          cp -v evolution-src/*.sh "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
+          cp -v evolution-src/*.sh.in "$HOME/rpmbuild/SOURCES/" 2>/dev/null || true
+          cp -v evolution-src/evolution.spec "$HOME/rpmbuild/SPECS/"
+
+      - name: Build .rpm
+        run: rpmbuild --define "_topdir $HOME/rpmbuild" -bb "$HOME/rpmbuild/SPECS/evolution.spec"
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist debug
+          find "$HOME/rpmbuild/RPMS" -name '*.rpm' -exec cp -v {} dist/ \;
+          # Same as the Debian job: debuginfo and debugsource are the bulk of
+          # the bytes and stay as a workflow artifact rather than on the
+          # release page.
+          mv dist/*debuginfo*.rpm dist/*debugsource*.rpm debug/ 2>/dev/null || true
+          ( cd dist && tar -czf "../${BUNDLE}" *.rpm && mv "../${BUNDLE}" . )
+          ls -l dist debug
+        env:
+          BUNDLE: ${{ github.event.repository.name }}-${{ env.RELEASE_TAG }}-rpms.tar.gz
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.rpm
+            dist/*.tar.gz
+
+      # One directory per artifact. upload-artifact roots an artifact at the
+      # least common ancestor of everything it matches, so listing paths from
+      # both dist/ and debug/ pushed those directory names into the artifact,
+      # and the release step then looked for dist/*.deb inside dist/dist/.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-packages-${{ env.RELEASE_TAG }}
+          path: dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-debug-symbols-${{ env.RELEASE_TAG }}
+          path: debug/*
+          if-no-files-found: ignore
+
+  publish-release:
+    needs: [build-deb, build-rpm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Only the package artifacts; the debug-symbol ones are deliberately not
+      # published, and merge-multiple would otherwise flatten them in here.
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: '*-packages-*'
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$RELEASE_TAG" \
+            --generate-notes \
+            dist/*.tar.gz dist/*.deb dist/*.rpm
