@@ -44,7 +44,7 @@
 
 Name: evolution
 Version: 3.62.1
-Release: 1.triplewrap1%{?dist}
+Release: 1.triplewrap2%{?dist}
 Summary: Mail and calendar client for GNOME
 License: GPL-2.0-or-later AND GFDL-1.3-or-later
 URL: https://gitlab.gnome.org/GNOME/evolution/-/wikis/home
@@ -600,6 +600,10 @@ grep -v "%{_datadir}/locale" evolution.lang > help.lang
 %endif
 
 %changelog
+* Fri Nov 20 2026 Mike Ward <mward5@tinfoil-fedora.com> - 3.62.1-1.triplewrap2
+- No change to the RPMs; rebuilt to keep the release number in step with
+  the Debian packages, which fix a file conflict in evolution-dev
+
 * Thu Nov 19 2026 Mike Ward <mward5@tinfoil-fedora.com> - 3.62.1-1.triplewrap1
 - Move to upstream 3.62.1, packaged from the Fedora 45 spec; the fork now
   carries only GNOME/evolution!242 (triple-wrap S/MIME, RFC 2634) and !243
