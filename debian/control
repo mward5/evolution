@@ -150,6 +150,10 @@ Depends:
  libgnome-desktop-3-dev,
  libgtk-3-dev,
  libwebkit2gtk-4.1-dev,
+Breaks:
+ libevolution (<< 3.62.1~),
+Replaces:
+ libevolution (<< 3.62.1~),
 Description: development library files for Evolution
  Evolution is a groupware suite which integrates mail, calendar,
  address book, to-do list and memo tools.
